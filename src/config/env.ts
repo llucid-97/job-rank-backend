@@ -7,6 +7,7 @@ const environmentSchema = z.object({
     .default("development"),
 
   PORT: z.coerce.number().int().positive().default(3000),
+  HOST: z.string().min(1).default("0.0.0.0"),
 
   FRONTEND_URL: z.string().url(),
 
