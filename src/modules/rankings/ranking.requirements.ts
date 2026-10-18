@@ -83,6 +83,15 @@ function containsQuote(source: string, quote: string): boolean {
   return normalize(source).includes(normalize(quote));
 }
 
+/** Drop explicit on-call and travel conditions that are outside the must-have scope. */
+function isOutOfScopeAvailabilityRequirement(item: RequiredRequirement): boolean {
+  const label = item.requirement.toLocaleLowerCase();
+  const evidence = item.posting_evidence.toLocaleLowerCase();
+  const onCall = /\bon[- ]call\b/u.test(label) && /\bon[- ]call\b/u.test(evidence);
+  const travel = /\btravel\b/u.test(label) && /\btravel\s+(?:up to|at least|no more than|at most)\b/u.test(evidence);
+  return onCall || travel;
+}
+
 /** Keep unsupported model assertions out of a saved qualification result. */
 export function validateRequiredRequirements(
   value: unknown,
@@ -95,7 +104,7 @@ export function validateRequiredRequirements(
   const kinds = new Set(["credential", "experience", "language", "skill"]);
   const statuses = new Set(["met", "unmet", "unknown"]);
   const seen = new Set<string>();
-  return value.map((item: any, index: number) => {
+  const validated = value.map((item: any, index: number) => {
     const invalid = (field: string) => { throw new Error(`Requirement review item ${index} has invalid ${field}.`); };
     if (!item || typeof item !== "object" || Array.isArray(item)) invalid("shape");
     if (!kinds.has(item.kind)) invalid("kind");
@@ -127,6 +136,7 @@ export function validateRequiredRequirements(
       reason: item.reason.trim(),
     };
   });
+  return validated.filter((item) => !isOutOfScopeAvailabilityRequirement(item));
 }
 
 /** Extract only explicit job must-haves, then assess them against the full CV. */
