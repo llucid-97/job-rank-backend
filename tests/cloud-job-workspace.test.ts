@@ -170,10 +170,13 @@ test('projection collapses skill detail and uses distinct array values as score 
   assert.throws(() => scoreProjection({ skills_interests_schema: { areas_of_interest: [null] } }));
 });
 
-test('score equals shifted geometric mean, reaches endpoints, ignores empty objects and excludes behavioral leaves', () => {
-  /** Prove score equals shifted geometric mean, reaches endpoints, ignores empty objects and excludes behavioral leaves. Synthetic transport keeps this contract independent of live accounts. */
+test('skill relevance uses only skills and background, excluding interests, pay and behavioral leaves', () => {
+  /** Keep preference changes separate from the ranked skills index. */
   for (const value of [0, 0.25, 0.75, 1]) assert.ok(Math.abs(calculateCandidateScore(analysis(value)) - value) < 1e-12);
-  const mixed = { candidate_match: { skills_interests_schema: { a: 0, b: 1, empty: {} }, behavioral_points_schema: { ignored: 0 } } };
+  const mixed = { candidate_match: { skills_interests_schema: { skills: { a: 0, b: 1 }, professional_background: {}, areas_of_interest: { preferred: 1 }, compensation: { salary: 1 } }, behavioral_points_schema: { ignored: 0 } } };
+  assert.ok(Math.abs(calculateCandidateScore(mixed) - (Math.sqrt(0.11) - 0.1)) < 1e-12);
+  mixed.candidate_match.skills_interests_schema.areas_of_interest.preferred = 0;
+  mixed.candidate_match.skills_interests_schema.compensation.salary = 0;
   assert.ok(Math.abs(calculateCandidateScore(mixed) - (Math.sqrt(0.11) - 0.1)) < 1e-12);
   assert.equal(calculateCandidateScore({ candidate_match: { skills_interests_schema: {} } }), 0);
   for (const invalid of [NaN, Infinity, -0.1, 1.1, '0.5', null, []]) {

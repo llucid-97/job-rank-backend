@@ -28,12 +28,18 @@ function collectScores(value: unknown, scores: number[]): boolean {
 
 export function calculateCandidateScore(analysis: Record<string, any>) {
   const scoreTree = analysis.candidate_match?.skills_interests_schema;
-
-  const scores: number[] = [];
-
-  if (!scoreTree || !collectScores(scoreTree, scores)) {
+  if (!scoreTree || typeof scoreTree !== "object" || Array.isArray(scoreTree)
+    || !collectScores(scoreTree, [])) {
     throw new Error("Ranking response contains an invalid score tree.");
   }
+
+  // Interest and compensation leaves remain in the analysis for explanation,
+  // but neither is evidence of a candidate's skills or experience.
+  const scores: number[] = [];
+  collectScores({
+    skills: scoreTree.skills ?? {},
+    professional_background: scoreTree.professional_background ?? {},
+  }, scores);
 
   if (scores.length === 0) return 0;
 
