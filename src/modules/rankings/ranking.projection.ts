@@ -42,6 +42,16 @@ function profileTerms(value: string, path: string[]): string[] {
   });
 }
 
+/** Small inflection fold for one-word skill labels; excerpts still use the exact source word. */
+function skillRoot(word: string): string {
+  const lower = word.toLocaleLowerCase();
+  if (lower.length > 6 && lower.endsWith("ing")) return lower.slice(0, -3);
+  if (lower.length > 5 && lower.endsWith("ies")) return `${lower.slice(0, -3)}y`;
+  if (lower.length > 5 && lower.endsWith("es")) return lower.slice(0, -2);
+  if (lower.length > 5 && lower.endsWith("s")) return lower.slice(0, -1);
+  return lower;
+}
+
 function termPattern(term: string): RegExp {
   const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu");
@@ -78,7 +88,7 @@ function excerptForTerms(source: string, terms: string[]): string | null {
 }
 
 /** Build only literal profile/CV/posting pairs. The quotes explain shared text, not requirements or score causes. */
-function literalMatches(input: { description: string; cv: string; profile: any }, paths: string[][]) {
+function literalMatches(input: { description: string; cv: string; profile: any }, paths: string[][], scores: Record<string, any>) {
   const rows: Array<{ skill_or_requirement: string; reason: string; evidence: string; kind: "literal_overlap" }> = [];
   const seen = new Set<string>();
   const descriptionMarker = /\bDescription\s*:\s*/i.exec(input.description);
@@ -109,6 +119,37 @@ function literalMatches(input: { description: string; cv: string; profile: any }
     seen.add(identity);
     rows.push({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
     if (rows.length >= 4) break;
+  }
+  // A singular skill label can differ from the wording used in both source documents
+  // (for example, Interviewing versus interviews). Keep the source word identical.
+  const cvWordsByRoot = new Map<string, Set<string>>();
+  for (const match of input.cv.matchAll(/[\p{L}]{8,}/gu)) {
+    const word = match[0].toLocaleLowerCase();
+    if (explanationStopWords.has(word)) continue;
+    const root = skillRoot(word);
+    cvWordsByRoot.set(root, (cvWordsByRoot.get(root) ?? new Set()).add(word));
+  }
+  for (const path of paths) {
+    if (rows.length >= 4) break;
+    if (path[0] !== "skills_interests_schema" || path[1] !== "skills") continue;
+    const label = path.at(-1) || "";
+    if (!/^[\p{L}]{5,}$/u.test(label) || explanationStopWords.has(label.toLocaleLowerCase())) continue;
+    let score: any = scores;
+    for (const key of path) score = score?.[key];
+    if (typeof score !== "number" || score <= 0.5) continue;
+    const words = cvWordsByRoot.get(skillRoot(label));
+    if (!words) continue;
+    for (const word of words) {
+      if (!termPattern(word).test(postingBody)) continue;
+      const reason = excerptForTerms(postingBody, [word]);
+      const evidence = excerptForTerms(input.cv, [word]);
+      if (!reason || !evidence) continue;
+      const identity = `${path.join("/")}\0${reason}\0${evidence}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      rows.push({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
+      break;
+    }
   }
   // Profile extraction can omit a concrete skill that is still written in the CV.
   // Use only adjacent, specific words that appear verbatim in both source texts.
@@ -214,5 +255,5 @@ export async function rankWithJev(input: { description: string; cv: string; prof
     target[path.at(-1)!] = answer.score / 3;
   });
   return { analysis: { job_summary: { skills_interests_schema: {}, behavioral_points_schema: {} },
-    candidate_match: { ...trees, matches: literalMatches(input, paths) } }, model: result.model };
+    candidate_match: { ...trees, matches: literalMatches(input, paths, trees) } }, model: result.model };
 }
