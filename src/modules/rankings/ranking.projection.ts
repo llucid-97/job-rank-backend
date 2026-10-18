@@ -70,15 +70,24 @@ function scoredSkillCandidates(input: { description: string; cv: string; profile
     ? input.description.slice(descriptionMarker.index + descriptionMarker[0].length)
     : input.description;
   const background: string[] = [];
-  function collect(value: any): void {
-    if (typeof value === "string") background.push(value);
-    else if (Array.isArray(value)) value.forEach(collect);
-    else if (value && typeof value === "object") Object.values(value).forEach(collect);
+  const skillWork: string[] = [];
+  function collect(value: any, target: string[]): void {
+    if (typeof value === "string") target.push(value);
+    else if (Array.isArray(value)) value.forEach(item => collect(item, target));
+    else if (value && typeof value === "object") Object.values(value).forEach(item => collect(item, target));
   }
-  collect(input.profile?.skills_interests_schema?.professional_background);
+  const skillSchema = input.profile?.skills_interests_schema;
+  collect(skillSchema?.professional_background, background);
+  collect(skillSchema?.skills, skillWork);
   const sentences = (source: string) => source.split(/(?<=[!?])\s+|(?<=\.)\s+(?=[A-Z“])/u)
     .map(sentence => sentence.trim()).filter(Boolean);
-  const cvSentences = background.flatMap(sentences);
+  const actionText = /\b(?:adapt|administer|align|analy[sz]e|assess|build|built|check|communicate|complete|conduct|coordinate|create|deliver|design|develop|diagnose|document|drive|establish|evaluate|implement|investigate|lead|maintain|manage|monitor|own|plan|prepare|present|record|reconcile|review|support|test|translate|troubleshoot|write|wrote)(?:e?d|ing|s)?\b/i;
+  const aspirationText = /\b(?:aspir(?:e|es|ed|ing)|hope\s+to|want\s+to|would\s+like\s+to|seeking\s+to|looking\s+to|interested\s+in)\b/i;
+  // Skill details can contain performed-work evidence too. Keep only exact CV
+  // text that reads as completed work, and exclude stated goals or interests.
+  const cvSentences = [...background, ...skillWork].flatMap(sentences)
+    .filter(sentence => sentence.length <= 180 && input.cv.includes(sentence)
+      && !aspirationText.test(sentence) && actionText.test(sentence));
   const postingSentences = sentences(postingBody);
   const requiredStart = /required\s+skills\s*(?:&|and)\s*experience/i.exec(postingBody)?.index ?? -1;
   const nextSection = requiredStart >= 0
@@ -94,7 +103,6 @@ function scoredSkillCandidates(input: { description: string; cv: string; profile
     .map(skillRoot))];
   const containsRoot = (sentence: string, root: string) => [...sentence.matchAll(/[\p{L}\p{N}]+/gu)]
     .some(match => skillRoot(match[0]) === root);
-  const actionText = /\b(?:align|analy[sz]e|build|conduct|coordinate|create|deliver|design|develop|drive|establish|evaluate|implement|investigate|lead|maintain|manage|monitor|own|plan|prepare|reconcile|review|support|test|translate|troubleshoot|write)\b/i;
   const candidates: Array<{ match: { skill_or_requirement: string; reason: string; evidence: string; kind: "literal_overlap" }; scoreIndex: number }> = [];
   const seenSkills = new Set<string>();
   for (const [scoreIndex, path] of paths.entries()) {
@@ -109,13 +117,23 @@ function scoredSkillCandidates(input: { description: string; cv: string; profile
         count + Number(containsRoot(sentence, root)), 0);
       return frequency(left) - frequency(right) || left.length - right.length;
     });
-    const anchor = labelRoots.find(root => {
-      const cvSentence = cvSentences.find(sentence => sentence.length <= 180 && containsRoot(sentence, root));
-      const postingSentence = postingSentences.filter(sentence => sentence.length <= 180 && containsRoot(sentence, root))
-        .sort((left, right) => Number(isRequiredSentence(right)) - Number(isRequiredSentence(left))
-          || Number(actionText.test(right)) - Number(actionText.test(left)))[0];
+    const evidenceRoots = cvSentences.flatMap(sentence => roots(sentence))
+      .filter(root => postingSentences.some(sentence => containsRoot(sentence, root)));
+    const anchorRoots = [...new Set([...labelRoots, ...evidenceRoots])];
+    const anchor = anchorRoots.find(root => {
+      const cvSentence = cvSentences.find(sentence => containsRoot(sentence, root));
+      const postingChoices = postingSentences.flatMap(sentence => {
+        const spans = [...sentence.matchAll(/[\p{L}\p{N}]+/gu)]
+          .filter(match => skillRoot(match[0]) === root)
+          .map(match => excerptForSpan(sentence, match.index!, match.index! + match[0].length))
+          .filter((excerpt): excerpt is string => Boolean(excerpt) && input.description.includes(excerpt!));
+        return spans.map(excerpt => ({ sentence, excerpt }));
+      }).sort((left, right) => Number(isRequiredSentence(right.sentence)) - Number(isRequiredSentence(left.sentence))
+        || Number(actionText.test(right.sentence)) - Number(actionText.test(left.sentence))
+        || left.excerpt.length - right.excerpt.length);
+      const postingSentence = postingChoices[0]?.excerpt;
       if (!cvSentence || !postingSentence) return false;
-      if (!input.cv.includes(cvSentence) || !input.description.includes(postingSentence)) return false;
+      if (!input.cv.includes(cvSentence) || postingSentence.length > 180) return false;
       candidates.push({ match: { skill_or_requirement: label, reason: postingSentence, evidence: cvSentence, kind: "literal_overlap" }, scoreIndex });
       return true;
     });
