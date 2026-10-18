@@ -2,10 +2,12 @@ import { responseCancellation } from "../../lib/request-cancellation.js";
 import { Router } from "express";
 import { authenticate } from "../../middleware/authenticate.js";
 import { requireActiveAccount } from "../../middleware/require-active-account.js";
-import { assessJobsSchema, assistSchema, saveSchema } from "./onboarding.schema.js";
+import { assistSchema, saveSchema } from "./onboarding.schema.js";
+import { matchLaneJobsSchema, prepareLaneProfilesSchema } from "./lane-profile.schema.js";
+import { matchOnboardingJobs } from "./lane-match.service.js";
+import { prepareLaneProfiles } from "./lane-profile.service.js";
 import {
   assistOnboarding,
-  assessOnboardingJobs,
   getOnboarding,
   saveOnboarding,
 } from "./onboarding.service.js";
@@ -21,16 +23,20 @@ onboardingRouter.put("/", async (request, response) => {
     data: await saveOnboarding(request.auth!.userId, draft, expectedRevision),
   });
 });
-onboardingRouter.post("/assess-jobs", async (request, response) => {
-  const input = assessJobsSchema.parse(request.body);
+onboardingRouter.post("/lane-profiles", async (request, response) => {
+  const { expectedRevision } = prepareLaneProfilesSchema.parse(request.body);
   const cancellation = responseCancellation(response);
   try {
-    response.json({ data: await assessOnboardingJobs(
-      request.auth!.userId,
-      input,
-      typeof request.id === "number" ? request.id : undefined,
-      cancellation.signal,
-    ) });
+    response.json({ data: await prepareLaneProfiles(request.auth!.userId, expectedRevision, cancellation.signal) });
+  } finally {
+    cancellation.dispose();
+  }
+});
+onboardingRouter.post("/match-jobs", async (request, response) => {
+  const input = matchLaneJobsSchema.parse(request.body);
+  const cancellation = responseCancellation(response);
+  try {
+    response.json({ data: await matchOnboardingJobs(request.auth!.userId, input, cancellation.signal) });
   } finally {
     cancellation.dispose();
   }

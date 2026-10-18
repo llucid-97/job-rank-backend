@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { laneMatchingProfileSchema } from "./lane-profile.schema.js";
 
 const text = z.string().max(4000);
 
@@ -26,6 +27,8 @@ export const draftSchema = z
     interviewAnswers: z.record(z.string().max(500), z.string().max(12000)),
     confirmedAt: z.iso.datetime({ offset: true }).nullable(),
     sourceDocumentIds: z.array(z.uuid()).max(30),
+    laneProfiles: z.record(z.string().max(100), laneMatchingProfileSchema).optional(),
+    matchingSourceKey: z.string().max(100).optional(),
     advice: z.record(z.string(), z.unknown()).optional(),
   })
   .strict()
@@ -69,27 +72,6 @@ export const assistSchema = z
   })
   .strict();
 
-export const assessJobsSchema = z.object({
-  jobIds: z.array(z.uuid()).min(1).max(12),
-  expectedRevision: z.number().int().positive(),
-}).strict().superRefine((input, context) => {
-  if (new Set(input.jobIds).size !== input.jobIds.length) {
-    context.addIssue({ code: "custom", message: "Job IDs must be unique.", path: ["jobIds"] });
-  }
-});
-
-export const jobLaneAssessmentsSchema = z.object({
-  results: z.array(z.object({
-    job_id: z.uuid(),
-    lane_assessments: z.array(z.object({
-      lane_id: z.string().min(1).max(100),
-      fit: z.enum(["fit", "uncertain", "not_fit"]),
-      reason: z.string().min(1).max(400),
-      unknowns: z.array(z.string().max(120)).max(8),
-    }).strict()).max(12),
-  }).strict()).max(12),
-}).strict();
-
 // Provider output is untrusted; only these displayable suggestions can reach the UI.
 export const adviceSchema = z.object({
   summary: z.string().max(12000),
@@ -129,4 +111,3 @@ export const adviceResponseFormat = {
 export type OnboardingDraft = z.infer<typeof draftSchema>;
 export type OnboardingAdvice = z.infer<typeof adviceSchema>;
 export type AssistInput = z.infer<typeof assistSchema>;
-export type AssessJobsInput = z.infer<typeof assessJobsSchema>;
