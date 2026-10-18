@@ -33,61 +33,55 @@ const explanationStopWords = new Set([
 /** Small inflection fold for one-word skill labels; excerpts still use the exact source word. */
 function skillRoot(word: string): string {
   const lower = word.toLocaleLowerCase();
-  // Treat the common diagnostic/diagnosis forms as the same skill concept.
-  if (/^diagnos(?:is|es|tic|tics|ed|ing)$/.test(lower)) return "diagnos";
-  if (lower.length > 6 && lower.endsWith("ing")) return lower.slice(0, -3);
-  if (lower.length > 5 && lower.endsWith("ies")) return `${lower.slice(0, -3)}y`;
-  if (lower.length > 5 && lower.endsWith("es")) return lower.slice(0, -2);
-  if (lower.length > 5 && lower.endsWith("s")) return lower.slice(0, -1);
+  if (lower.length > 6 && lower.endsWith("ies")) return `${lower.slice(0, -3)}y`;
+  for (const suffix of ["ing", "ed", "es", "s"]) {
+    if (lower.length > suffix.length + 4 && lower.endsWith(suffix)) {
+      let stem = lower.slice(0, -suffix.length);
+      if (suffix === "ing" && stem.length > 2 && stem.at(-1) === stem.at(-2)) stem = stem.slice(0, -1);
+      return stem;
+    }
+  }
   return lower;
+}
+
+function sameSkillTerm(left: string, right: string): boolean {
+  if (left === right) return true;
+  let common = 0;
+  while (common < Math.min(left.length, right.length) && left[common] === right[common]) common++;
+  return common >= 5 && common >= Math.ceil(Math.min(left.length, right.length) * 0.7);
 }
 
 function excerptForSpan(source: string, start: number, end: number): string | null {
   if (end - start > 180) return null;
+  if (source.length <= 180) return source.trim() || null;
 
-  const before = source.slice(0, start);
-  const after = source.slice(end);
-  const priorBoundary = Math.max(before.lastIndexOf("."), before.lastIndexOf("!"), before.lastIndexOf("?"), before.lastIndexOf("\n"));
-  const nextBoundaries = [after.indexOf("."), after.indexOf("!"), after.indexOf("?"), after.indexOf("\n")].filter(index => index >= 0);
-  let left = priorBoundary >= 0 ? priorBoundary + 1 : Math.max(0, start - 70);
-  let right = nextBoundaries.length ? end + Math.min(...nextBoundaries) + 1 : Math.min(source.length, end + 70);
-  while (left < start && /\s/.test(source.charAt(left))) left++;
-  while (right > end && /\s/.test(source.charAt(right - 1))) right--;
+  let left = Math.max(0, start - 75);
+  let right = Math.min(source.length, end + 75);
+  while (left > 0 && !/\s/.test(source.charAt(left - 1))) left--;
+  while (right < source.length && !/\s/.test(source.charAt(right))) right++;
   if (right - left > 180) {
-    left = Math.max(0, start - 70);
-    right = Math.min(source.length, end + 70);
-    while (left < start && !/\s/.test(source.charAt(left - 1))) left++;
-    while (right > end && !/\s/.test(source.charAt(right))) right--;
+    left = Math.max(0, start - 60);
+    right = Math.min(source.length, end + 60);
+    while (left > 0 && !/\s/.test(source.charAt(left - 1))) left--;
+    while (right < source.length && !/\s/.test(source.charAt(right))) right++;
   }
   if (right - left > 180) return null;
   return source.slice(left, right).trim() || null;
 }
 
 /** Select one exact work-history/posting excerpt pair per scored skill path, before semantic scoring. */
-function scoredSkillCandidates(input: { description: string; cv: string; profile: any }, paths: string[][]) {
+export function scoredSkillCandidates(input: { description: string; cv: string }, paths: string[][]) {
   const descriptionMarker = /\bDescription\s*:\s*/i.exec(input.description);
   const postingBody = descriptionMarker
     ? input.description.slice(descriptionMarker.index + descriptionMarker[0].length)
     : input.description;
-  const background: string[] = [];
-  const skillWork: string[] = [];
-  function collect(value: any, target: string[]): void {
-    if (typeof value === "string") target.push(value);
-    else if (Array.isArray(value)) value.forEach(item => collect(item, target));
-    else if (value && typeof value === "object") Object.values(value).forEach(item => collect(item, target));
-  }
-  const skillSchema = input.profile?.skills_interests_schema;
-  collect(skillSchema?.professional_background, background);
-  collect(skillSchema?.skills, skillWork);
   const sentences = (source: string) => source.split(/(?<=[!?])\s+|(?<=\.)\s+(?=[A-Z“])/u)
     .map(sentence => sentence.trim()).filter(Boolean);
-  const actionText = /\b(?:adapt|administer|align|analy[sz]e|assess|build|built|check|communicate|complete|conduct|coordinate|create|deliver|design|develop|diagnose|document|drive|establish|evaluate|implement|investigate|lead|maintain|manage|monitor|own|plan|prepare|present|record|reconcile|review|support|test|translate|troubleshoot|write|wrote)(?:e?d|ing|s)?\b/i;
+  const actionText = /\b(?:adapt|administer|align|analy[sz]e|assess|build|built|calibrate|check|communicate|compare|complete|conduct|configure|coordinate|create|deliver|design|develop|diagnose|document|drive|establish|evaluate|implement|investigate|lead|log|maintain|manage|monitor|own|plan|prepare|present|record|reconcile|review|support|test|translate|troubleshoot|write|wrote)(?:e?d|ing|s)?\b/i;
   const aspirationText = /\b(?:aspir(?:e|es|ed|ing)|hope\s+to|want\s+to|would\s+like\s+to|seeking\s+to|looking\s+to|interested\s+in)\b/i;
-  // Skill details can contain performed-work evidence too. Keep only exact CV
-  // text that reads as completed work, and exclude stated goals or interests.
-  const cvSentences = [...background, ...skillWork].flatMap(sentences)
-    .filter(sentence => sentence.length <= 180 && input.cv.includes(sentence)
-      && !aspirationText.test(sentence) && actionText.test(sentence));
+  // Keep exact CV text that reads as completed work, and exclude stated goals.
+  const cvSentences = sentences(input.cv)
+    .filter(sentence => sentence.length <= 180 && !aspirationText.test(sentence) && actionText.test(sentence));
   const postingSentences = sentences(postingBody);
   const requiredStart = /required\s+skills\s*(?:&|and)\s*experience/i.exec(postingBody)?.index ?? -1;
   const nextSection = requiredStart >= 0
@@ -101,9 +95,9 @@ function scoredSkillCandidates(input: { description: string; cv: string; profile
   const roots = (label: string) => [...new Set(label.split(/[^\p{L}\p{N}+#]+/u)
     .filter(word => [...word].length >= 5 && !explanationStopWords.has(word.toLocaleLowerCase()))
     .map(skillRoot))];
-  const containsRoot = (sentence: string, root: string) => [...sentence.matchAll(/[\p{L}\p{N}]+/gu)]
-    .some(match => skillRoot(match[0]) === root);
-  const candidates: Array<{ match: { skill_or_requirement: string; reason: string; evidence: string; kind: "literal_overlap" }; scoreIndex: number }> = [];
+  const sentenceRoots = (sentence: string) => [...sentence.matchAll(/[\p{L}\p{N}]+/gu)].map(match => skillRoot(match[0]));
+  const containsRoot = (sentence: string, root: string) => sentenceRoots(sentence).some(word => sameSkillTerm(word, root));
+  const candidates: Array<{ match: { skill_or_requirement: string; reason: string; evidence: string; kind: "literal_overlap" }; scoreIndex: number; displayLabel: string }> = [];
   const seenSkills = new Set<string>();
   for (const [scoreIndex, path] of paths.entries()) {
     if (path[0] !== "skills_interests_schema" || path[1] !== "skills") continue;
@@ -115,29 +109,38 @@ function scoredSkillCandidates(input: { description: string; cv: string; profile
     const labelRoots = roots(label).sort((left, right) => {
       const frequency = (root: string) => postingSentences.reduce((count, sentence) =>
         count + Number(containsRoot(sentence, root)), 0);
-      return frequency(left) - frequency(right) || left.length - right.length;
+      return frequency(left) - frequency(right) || right.length - left.length;
     });
-    const evidenceRoots = cvSentences.flatMap(sentence => roots(sentence))
-      .filter(root => postingSentences.some(sentence => containsRoot(sentence, root)));
-    const anchorRoots = [...new Set([...labelRoots, ...evidenceRoots])];
-    const anchor = anchorRoots.find(root => {
-      const cvSentence = cvSentences.find(sentence => containsRoot(sentence, root));
-      const postingChoices = postingSentences.flatMap(sentence => {
-        const spans = [...sentence.matchAll(/[\p{L}\p{N}]+/gu)]
-          .filter(match => skillRoot(match[0]) === root)
-          .map(match => excerptForSpan(sentence, match.index!, match.index! + match[0].length))
-          .filter((excerpt): excerpt is string => Boolean(excerpt) && input.description.includes(excerpt!));
-        return spans.map(excerpt => ({ sentence, excerpt }));
-      }).sort((left, right) => Number(isRequiredSentence(right.sentence)) - Number(isRequiredSentence(left.sentence))
-        || Number(actionText.test(right.sentence)) - Number(actionText.test(left.sentence))
-        || left.excerpt.length - right.excerpt.length);
-      const postingSentence = postingChoices[0]?.excerpt;
-      if (!cvSentence || !postingSentence) return false;
-      if (!input.cv.includes(cvSentence) || postingSentence.length > 180) return false;
-      candidates.push({ match: { skill_or_requirement: label, reason: postingSentence, evidence: cvSentence, kind: "literal_overlap" }, scoreIndex });
-      return true;
-    });
-    if (anchor) seenSkills.add(normalized);
+    const pairChoices: Array<{ cvSentence: string; postingSentence: string; labelCoverage: number; overlap: number; required: number; actions: number }> = [];
+    for (const cvSentence of cvSentences) {
+      const cvRoots = sentenceRoots(cvSentence);
+      for (const sentence of postingSentences) {
+        const postingRoots = sentenceRoots(sentence);
+        const sharedLabelRoots = labelRoots.filter(root => cvRoots.some(word => sameSkillTerm(word, root))
+          && postingRoots.some(word => sameSkillTerm(word, root)));
+        if (sharedLabelRoots.length === 0) continue;
+        const sharedRoots = cvRoots.filter(root => postingRoots.some(word => sameSkillTerm(word, root)));
+        const postingSentence = sharedLabelRoots
+          .flatMap(root => [...sentence.matchAll(/[\p{L}\p{N}]+/gu)]
+            .filter(match => sameSkillTerm(skillRoot(match[0]), root))
+            .map(match => excerptForSpan(sentence, match.index!, match.index! + match[0].length)))
+          .find((excerpt): excerpt is string => Boolean(excerpt) && input.description.includes(excerpt!) && excerpt!.length <= 180);
+        if (!postingSentence || !input.cv.includes(cvSentence)) continue;
+        pairChoices.push({ cvSentence, postingSentence, labelCoverage: sharedLabelRoots.length,
+          overlap: sharedRoots.length, required: Number(isRequiredSentence(sentence)),
+          actions: Number(actionText.test(sentence)) + Number(actionText.test(cvSentence)) });
+      }
+    }
+    pairChoices.sort((left, right) => right.labelCoverage - left.labelCoverage || right.overlap - left.overlap
+      || right.required - left.required || right.actions - left.actions
+      || left.postingSentence.length - right.postingSentence.length);
+    const bestPair = pairChoices[0];
+    if (bestPair) {
+      candidates.push({ match: { skill_or_requirement: label, reason: bestPair.postingSentence,
+        evidence: bestPair.cvSentence, kind: "literal_overlap" }, scoreIndex,
+        displayLabel: bestPair.labelCoverage === labelRoots.length ? label : "Related work" });
+      seenSkills.add(normalized);
+    }
     if (candidates.length >= 8) break;
   }
   return candidates;
@@ -245,7 +248,7 @@ export async function rankWithJev(input: { description: string; cv: string; prof
     candidate_score: number; posting_requirement_probability: number; cv_evidence_probability: number; supported: boolean;
   }> = [];
   const seenMatches = new Set<string>();
-  candidateMatches.forEach(({ match, scoreIndex }, index) => {
+  candidateMatches.forEach(({ match, scoreIndex, displayLabel }, index) => {
     const ids = semanticIds[index]!;
     const postingAnswer = result.answers[ids.posting];
     const evidenceAnswer = result.answers[ids.evidence];
@@ -263,7 +266,8 @@ export async function rankWithJev(input: { description: string; cv: string; prof
     const identity = `${match.reason}\0${match.evidence}`;
     if (seenMatches.has(identity)) return;
     seenMatches.add(identity);
-    matches.push({ ...match, posting_requirement_probability: postingAnswer.noul, cv_evidence_probability: evidenceAnswer.noul });
+    matches.push({ ...match, skill_or_requirement: displayLabel,
+      posting_requirement_probability: postingAnswer.noul, cv_evidence_probability: evidenceAnswer.noul });
   });
   return { analysis: { job_summary: { skills_interests_schema: {}, behavioral_points_schema: {} },
     candidate_match: { ...trees, matches, profile_item_text: profileItemText } }, model: result.model, semanticEvaluations };
