@@ -186,34 +186,6 @@ function literalMatches(input: { description: string; cv: string; profile: any }
       if (rows.some(row => row.skill_or_requirement === label)) break;
     }
   }
-  // Profile extraction can omit a concrete skill that is still written in the CV.
-  // Use only adjacent, specific words that appear verbatim in both source texts.
-  const cvWords = [...input.cv.matchAll(/[\p{L}\p{N}]+/gu)];
-  const phraseSeen = new Set<string>();
-  let lastAddedIndex = -2;
-  for (let index = 0; index + 1 < cvWords.length && index < 600 && rows.length < 4; index++) {
-    if (index === lastAddedIndex + 1) continue;
-    const first = cvWords[index]!;
-    const second = cvWords[index + 1]!;
-    if (!/^\s+$/.test(input.cv.slice(first.index! + first[0].length, second.index!))) continue;
-    const terms = [first[0], second[0]];
-    if (terms.some(term => (term.length < 4 && !["qa", "ux"].includes(term.toLowerCase()))
-      || explanationStopWords.has(term.toLowerCase()))) continue;
-    const phrase = terms.join(" ").toLowerCase();
-    if (phraseSeen.has(phrase)) continue;
-    phraseSeen.add(phrase);
-    // Both terms must be adjacent in each source; nearby unrelated words are not a match.
-    const adjacent = new RegExp(`(?<![\\p{L}\\p{N}])${terms.join("\\s+")}(?![\\p{L}\\p{N}])`, "iu");
-    const postingOccurrence = adjacent.exec(postingBody);
-    const cvOccurrence = adjacent.exec(input.cv);
-    if (!postingOccurrence || !cvOccurrence) continue;
-    const postingQuote = excerptForTerms(postingBody.slice(postingOccurrence.index), terms);
-    const evidence = excerptForTerms(input.cv.slice(cvOccurrence.index), terms);
-    if (!postingQuote || !evidence || !postingBody.includes(postingQuote) || !input.cv.includes(evidence)) continue;
-    rows.push({ skill_or_requirement: first[0] + " " + second[0],
-      reason: postingQuote, evidence, kind: "literal_overlap" });
-    lastAddedIndex = index;
-  }
   // A CV header can repeat the job title without showing shared work. Do not
   // present that title-only pair as a reason for fit.
   const cvHeader = input.cv.split(/\r?\n/, 1)[0] || "";
