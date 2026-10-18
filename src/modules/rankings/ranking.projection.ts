@@ -121,9 +121,10 @@ function literalMatches(input: { description: string; cv: string; profile: any }
       || (valueText.trim().split(/\s+/).length <= 5 ? valueText.trim() : "Profile item")).slice(0, 80);
     const terms = profileTerms(valueText, path);
     const sharedTerms = terms.filter(term => termPattern(term).test(postingBody) && termPattern(term).test(input.cv));
-    const requiredOverlap = terms.length >= 3 ? 2 : 1;
-    if (sharedTerms.length < requiredOverlap) continue;
-    const chosenTerms = sharedTerms.slice(0, Math.max(requiredOverlap, 2));
+    // One shared term can be generic (for example, "testing") and cannot
+    // support a named profile task. Require two informative shared terms.
+    if (sharedTerms.length < 2) continue;
+    const chosenTerms = sharedTerms.slice(0, 2);
     const postingQuote = excerptForTerms(postingBody, chosenTerms);
     const evidence = excerptForTerms(input.cv, chosenTerms);
     if (!postingQuote || !evidence || !postingBody.includes(postingQuote) || !input.cv.includes(evidence)) continue;
