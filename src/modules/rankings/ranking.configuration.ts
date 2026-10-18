@@ -1,4 +1,4 @@
-export const rankingVersion = "0.0.23";
+export const rankingVersion = "0.0.24";
 
 /** Public ranking policy, with provider secrets retained on the server. */
 export function rankingConfiguration(): { classifier: "jev" | "llm"; model: string; version: string } {

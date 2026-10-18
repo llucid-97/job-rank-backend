@@ -5,6 +5,7 @@ import { buildRankingPrompt } from "./ranking.prompt.js";
 import { calculateCandidateScore } from "./ranking.score.js";
 
 import { rankWithJev, scoreProjection, validateAnalysis } from "./ranking.projection.js";
+import { assessRequiredRequirements } from "./ranking.requirements.js";
 import { assertActiveCv, loadCandidateSchema } from "../candidate/candidate-profile.service.js";
 
 
@@ -234,6 +235,18 @@ async function rankOneJob(
       profile: context.skillsProfile, schema: context.schema, model: context.model }) : null;
     const result = typed ? { analysis: typed.analysis, providerRequestId: null, inputTokens: 0, outputTokens: 0, costUsd: 0 } : await callOpenRouter(prompt, context.model);
     validateAnalysis(result.analysis, scoreProjection(context.skillsProfile));
+    let requirements: Awaited<ReturnType<typeof assessRequiredRequirements>> | null = null;
+    try {
+      requirements = await assessRequiredRequirements({ posting: job.description, cv: context.cvContent });
+    } catch (error) {
+      // A failed companion review must be visible as unavailable, not an empty
+      // list of requirements or a failed relevance rating.
+      console.error("Could not review job must-haves:", {
+        jobId: job.id,
+        message: error instanceof Error ? error.message : "Requirement review failed.",
+      });
+    }
+    (result.analysis as Record<string, unknown>).required_requirements = requirements?.requirements ?? null;
     await assertActiveCv(context.userId!, context.cvDocumentId);
 
     // A removal or changed description must not publish an obsolete analysis.
@@ -266,6 +279,7 @@ async function rankOneJob(
           status: "rated",
           model: context.model,
           resolved_model: typed?.model ?? context.model,
+          requirements_model: requirements?.model ?? null,
           classifier: context.classifier,
           rated_at: new Date().toISOString(),
           verified_location: verifiedLocation ?? null,
@@ -305,6 +319,18 @@ async function rankOneJob(
     if (saveError) throw saveError;
 
     if (context.classifier === "llm") await saveUsage({ context, result });
+    if (requirements) {
+      await saveUsage({
+        context: { ...context, model: requirements.model },
+        result: {
+          analysis: {},
+          providerRequestId: requirements.providerRequestId,
+          inputTokens: requirements.inputTokens,
+          outputTokens: requirements.outputTokens,
+          costUsd: requirements.costUsd,
+        },
+      });
+    }
 
     return true;
   } catch (error) {
