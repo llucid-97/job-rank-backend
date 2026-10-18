@@ -233,7 +233,10 @@ async function rankOneJob(
     const typed = context.classifier === "jev" ? await rankWithJev({ description: job.description, cv: context.cvContent,
       profile: context.skillsProfile, schema: context.schema, model: context.model }) : null;
     const result = typed ? { analysis: typed.analysis, providerRequestId: null, inputTokens: 0, outputTokens: 0, costUsd: 0 } : await callOpenRouter(prompt, context.model);
-    validateAnalysis(result.analysis, scoreProjection(context.skillsProfile));
+    validateAnalysis(result.analysis, scoreProjection(context.skillsProfile), {
+      description: job.description,
+      cv: context.cvContent,
+    });
     await assertActiveCv(context.userId!, context.cvDocumentId);
 
     // A removal or changed description must not publish an obsolete analysis.
