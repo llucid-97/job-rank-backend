@@ -33,6 +33,8 @@ const explanationStopWords = new Set([
 /** Small inflection fold for one-word skill labels; excerpts still use the exact source word. */
 function skillRoot(word: string): string {
   const lower = word.toLocaleLowerCase();
+  // Treat the common diagnostic/diagnosis forms as the same skill concept.
+  if (/^diagnos(?:is|es|tic|tics|ed|ing)$/.test(lower)) return "diagnos";
   if (lower.length > 6 && lower.endsWith("ing")) return lower.slice(0, -3);
   if (lower.length > 5 && lower.endsWith("ies")) return `${lower.slice(0, -3)}y`;
   if (lower.length > 5 && lower.endsWith("es")) return lower.slice(0, -2);
@@ -89,7 +91,7 @@ function scoredSkillCandidates(input: { description: string; cv: string; profile
   };
   const roots = (label: string) => [...new Set(label.split(/[^\p{L}\p{N}+#]+/u)
     .filter(word => [...word].length >= 5 && !explanationStopWords.has(word.toLocaleLowerCase()))
-    .map(skillRoot))].sort((left, right) => right.length - left.length);
+    .map(skillRoot))];
   const containsRoot = (sentence: string, root: string) => [...sentence.matchAll(/[\p{L}\p{N}]+/gu)]
     .some(match => skillRoot(match[0]) === root);
   const actionText = /\b(?:align|analy[sz]e|build|conduct|coordinate|create|deliver|design|develop|drive|establish|evaluate|implement|investigate|lead|maintain|manage|monitor|own|plan|prepare|reconcile|review|support|test|translate|troubleshoot|write)\b/i;
@@ -100,7 +102,14 @@ function scoredSkillCandidates(input: { description: string; cv: string; profile
     const label = (path.at(-1) || "").replace(/_/g, " ").trim();
     const normalized = label.toLocaleLowerCase().replace(/\s+/g, " ");
     if (!label || seenSkills.has(normalized)) continue;
-    const anchor = roots(label).find(root => {
+    // Prefer a label term that occurs in fewer posting sentences. This keeps
+    // broad terms such as "electrical" from winning over specific work terms.
+    const labelRoots = roots(label).sort((left, right) => {
+      const frequency = (root: string) => postingSentences.reduce((count, sentence) =>
+        count + Number(containsRoot(sentence, root)), 0);
+      return frequency(left) - frequency(right) || left.length - right.length;
+    });
+    const anchor = labelRoots.find(root => {
       const cvSentence = cvSentences.find(sentence => sentence.length <= 180 && containsRoot(sentence, root));
       const postingSentence = postingSentences.filter(sentence => sentence.length <= 180 && containsRoot(sentence, root))
         .sort((left, right) => Number(isRequiredSentence(right)) - Number(isRequiredSentence(left))
