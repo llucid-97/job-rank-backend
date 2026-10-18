@@ -29,6 +29,7 @@ const explanationStopWords = new Set([
   "company", "business", "support", "solutions", "services", "service", "global", "leading", "strong", "excellent",
   "ability", "skills", "knowledge", "related", "including", "required", "preferred", "multiple", "various", "across",
 ]);
+const genericSkillAnchors = new Set(["management", "monitoring", "production", "planning", "troubleshooting"]);
 
 function profileTerms(value: string, path: string[]): string[] {
   const candidates = [...path.slice().reverse().flatMap(part => part.split(/[^\p{L}\p{N}+#.]+/u)),
@@ -95,6 +96,19 @@ function literalMatches(input: { description: string; cv: string; profile: any }
   const postingBody = descriptionMarker
     ? input.description.slice(descriptionMarker.index + descriptionMarker[0].length)
     : input.description;
+  // An API mention alone is too broad. Pair only source phrases that also
+  // describe testing or checking the API, even when their action words differ.
+  const apiTask = /\bAPI\s+(?:checks?|validation|tests?|testing)\b/i;
+  const cvApiTask = apiTask.exec(input.cv);
+  const postingApiTask = apiTask.exec(postingBody);
+  if (cvApiTask && postingApiTask) {
+    const evidence = excerptForTerms(input.cv, [cvApiTask[0]]);
+    const reason = excerptForTerms(postingBody, [postingApiTask[0]]);
+    if (evidence && reason) {
+      rows.push({ skill_or_requirement: "API checks and validation", reason, evidence, kind: "literal_overlap" });
+      seen.add(`API checks and validation\0${reason}\0${evidence}`);
+    }
+  }
   for (const path of paths) {
     if (path[0] !== "skills_interests_schema" || !["skills", "professional_background"].includes(path[1] || "")) continue;
     let value: any = input.profile;
@@ -133,22 +147,41 @@ function literalMatches(input: { description: string; cv: string; profile: any }
     if (rows.length >= 4) break;
     if (path[0] !== "skills_interests_schema" || path[1] !== "skills") continue;
     const label = path.at(-1) || "";
-    if (!/^[\p{L}]{5,}$/u.test(label) || explanationStopWords.has(label.toLocaleLowerCase())) continue;
+    // Use a specific word from the scored skill label as the anchor. Requiring
+    // eight letters prevents generic single-word overlaps such as budget/perks.
+    const anchors = label.split(/[^\p{L}\p{N}]+/u)
+      .filter(word => [...word].length >= 8
+        && !explanationStopWords.has(word.toLocaleLowerCase())
+        && !genericSkillAnchors.has(word.toLocaleLowerCase()));
+    if (anchors.length === 0) continue;
     let score: any = scores;
     for (const key of path) score = score?.[key];
     if (typeof score !== "number" || score <= 0.5) continue;
-    const words = cvWordsByRoot.get(skillRoot(label));
-    if (!words) continue;
-    for (const word of words) {
-      if (!termPattern(word).test(postingBody)) continue;
-      const reason = excerptForTerms(postingBody, [word]);
-      const evidence = excerptForTerms(input.cv, [word]);
-      if (!reason || !evidence) continue;
-      const identity = `${path.join("/")}\0${reason}\0${evidence}`;
-      if (seen.has(identity)) continue;
-      seen.add(identity);
-      rows.push({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
-      break;
+    for (const anchor of anchors) {
+      const words = cvWordsByRoot.get(skillRoot(anchor));
+      if (!words) continue;
+      for (const cvWord of words) {
+        // Match inflections by root, while quoting the exact source spelling
+        // from each document (for example, interview/interviews).
+        const postingWord = [...postingBody.matchAll(/[\p{L}]{8,}/gu)]
+          .find(match => {
+            const before = postingBody.charAt(match.index! - 1);
+            const after = postingBody.charAt(match.index! + match[0].length);
+            return !/[\p{L}\p{N}\p{Pd}]/u.test(before)
+              && !/[\p{L}\p{N}\p{Pd}]/u.test(after)
+              && skillRoot(match[0]) === skillRoot(cvWord);
+          })?.[0];
+        if (!postingWord) continue;
+        const reason = excerptForTerms(postingBody, [postingWord]);
+        const evidence = excerptForTerms(input.cv, [cvWord]);
+        if (!reason || !evidence) continue;
+        const identity = `${path.join("/")}\0${reason}\0${evidence}`;
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        rows.push({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
+        break;
+      }
+      if (rows.some(row => row.skill_or_requirement === label)) break;
     }
   }
   // Profile extraction can omit a concrete skill that is still written in the CV.
@@ -179,7 +212,10 @@ function literalMatches(input: { description: string; cv: string; profile: any }
       reason: postingQuote, evidence, kind: "literal_overlap" });
     lastAddedIndex = index;
   }
-  return rows;
+  // A CV header can repeat the job title without showing shared work. Do not
+  // present that title-only pair as a reason for fit.
+  const cvHeader = input.cv.split(/\r?\n/, 1)[0] || "";
+  return rows.filter(row => !cvHeader.includes(row.evidence));
 }
 
 /** Validate exact score paths before a provider result may become a stored rating. */
