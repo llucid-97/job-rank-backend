@@ -218,6 +218,7 @@ export async function rankWithJev(input: { description: string; cv: string; prof
   const projection = scoreProjection(input.profile);
   const questions: Record<string, any> = {};
   const paths: string[][] = [];
+  const profileItemText: Record<string, any> = Object.create(null);
   const criteria = ["Not related to this job.", "Tangentially related to this job.", "Strongly related to this job.", "A specific, direct match for this job."];
   /** Give each exact candidate leaf a stable question ID so answers map back to its score path. */
   function walk(shape: any, path: string[]) {
@@ -227,6 +228,13 @@ export async function rankWithJev(input: { description: string; cv: string; prof
     }
     let value: any = input.profile;
     for (const key of path) value = Array.isArray(value) ? key : value?.[key] ?? key;
+    // Score keys can be shortened by profile extraction. Keep the original
+    // profile wording for display without changing any score path or value.
+    if (typeof value === "string" && value.trim() && value !== path.at(-1)) {
+      let target = profileItemText;
+      for (const key of path.slice(0, -1)) target = target[key] ??= Object.create(null);
+      target[path.at(-1)!] = value;
+    }
     const id = `q${paths.length.toString().padStart(4, "0")}`;
     paths.push(path);
     questions[id] = { type: "score", instructions: `Rate how well the job fits the candidate profile item at exact path ${JSON.stringify(path)} with candidate value ${JSON.stringify(value)}. Use the job description to judge relevance and the candidate profile to understand the item. Rate match strength, not answer confidence. Do not infer that a profile item is a job requirement merely because the candidate has it.`, criteria };
@@ -255,5 +263,5 @@ export async function rankWithJev(input: { description: string; cv: string; prof
     target[path.at(-1)!] = answer.score / 3;
   });
   return { analysis: { job_summary: { skills_interests_schema: {}, behavioral_points_schema: {} },
-    candidate_match: { ...trees, matches: literalMatches(input, paths, trees) } }, model: result.model };
+    candidate_match: { ...trees, matches: literalMatches(input, paths, trees), profile_item_text: profileItemText } }, model: result.model };
 }
