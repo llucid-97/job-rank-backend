@@ -28,21 +28,8 @@ const explanationStopWords = new Set([
   "seniority", "employment", "history",
   "company", "business", "support", "solutions", "services", "service", "global", "leading", "strong", "excellent",
   "ability", "skills", "knowledge", "related", "including", "required", "preferred", "multiple", "various", "across",
+  "research", "monthly", "quarterly", "weekly", "daily", "annual", "yearly",
 ]);
-const genericSkillAnchors = new Set(["management", "monitoring", "production", "planning", "troubleshooting"]);
-
-function profileTerms(value: string, path: string[]): string[] {
-  const candidates = [...path.slice().reverse().flatMap(part => part.split(/[^\p{L}\p{N}+#.]+/u)),
-    ...value.split(/[^\p{L}\p{N}+#.]+/u)];
-  const seen = new Set<string>();
-  return candidates.filter(term => {
-    const key = term.toLocaleLowerCase();
-    if ([...term].length < 4 || /^\d+$/.test(term) || explanationStopWords.has(key) || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 /** Small inflection fold for one-word skill labels; excerpts still use the exact source word. */
 function skillRoot(word: string): string {
   const lower = word.toLocaleLowerCase();
@@ -51,11 +38,6 @@ function skillRoot(word: string): string {
   if (lower.length > 5 && lower.endsWith("es")) return lower.slice(0, -2);
   if (lower.length > 5 && lower.endsWith("s")) return lower.slice(0, -1);
   return lower;
-}
-
-function termPattern(term: string): RegExp {
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu");
 }
 
 function excerptForSpan(source: string, start: number, end: number): string | null {
@@ -79,175 +61,61 @@ function excerptForSpan(source: string, start: number, end: number): string | nu
   return source.slice(left, right).trim() || null;
 }
 
-function excerptForTerms(source: string, terms: string[]): string | null {
-  const spans: Array<[number, number]> = [];
-  for (const term of terms) {
-    const match = termPattern(term).exec(source);
-    if (!match || match.index === undefined) return null;
-    spans.push([match.index, match.index + match[0].length]);
-  }
-  const start = Math.min(...spans.map(span => span[0]));
-  const end = Math.max(...spans.map(span => span[1]));
-  const excerpt = excerptForSpan(source, start, end);
-  return excerpt && terms.every(term => termPattern(term).test(excerpt)) ? excerpt : null;
-}
-
-/** Build only literal profile/CV/posting pairs. The quotes explain shared text, not requirements or score causes. */
-function literalMatches(input: { description: string; cv: string; profile: any }, paths: string[][], scores: Record<string, any>) {
-  const rows: Array<{ skill_or_requirement: string; reason: string; evidence: string; kind: "literal_overlap" }> = [];
-  const seen = new Set<string>();
-  const normalizeExcerpt = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  const addRow = (row: typeof rows[number]) => {
-    const label = row.skill_or_requirement.toLocaleLowerCase().replace(/\s+/g, " ").trim();
-    const evidence = normalizeExcerpt(row.evidence);
-    const contained = (left: string, right: string) => left.includes(right) || right.includes(left);
-    const duplicateIndex = rows.findIndex(existing =>
-      existing.skill_or_requirement.toLocaleLowerCase().replace(/\s+/g, " ").trim() === label
-      && contained(normalizeExcerpt(existing.evidence), evidence));
-    if (duplicateIndex >= 0) {
-      const existing = rows[duplicateIndex]!;
-      if (row.reason.length + row.evidence.length > existing.reason.length + existing.evidence.length) rows[duplicateIndex] = row;
-      return false;
-    }
-    rows.push(row);
-    return true;
-  };
+/** Select one exact work-history/posting excerpt pair per scored skill path, before semantic scoring. */
+function scoredSkillCandidates(input: { description: string; cv: string; profile: any }, paths: string[][]) {
   const descriptionMarker = /\bDescription\s*:\s*/i.exec(input.description);
   const postingBody = descriptionMarker
     ? input.description.slice(descriptionMarker.index + descriptionMarker[0].length)
     : input.description;
-  const backgroundValues: string[] = [];
-  function collectBackground(value: any): void {
-    if (typeof value === "string") backgroundValues.push(value);
-    else if (Array.isArray(value)) value.forEach(collectBackground);
-    else if (value && typeof value === "object") Object.values(value).forEach(collectBackground);
+  const background: string[] = [];
+  function collect(value: any): void {
+    if (typeof value === "string") background.push(value);
+    else if (Array.isArray(value)) value.forEach(collect);
+    else if (value && typeof value === "object") Object.values(value).forEach(collect);
   }
-  collectBackground(input.profile?.skills_interests_schema?.professional_background);
-  const workBackground = backgroundValues.join("\n");
-  // An API mention alone is too broad. Pair only source phrases that also
-  // describe testing or checking the API, even when their action words differ.
-  const apiTask = /\bAPI\s+(?:checks?|validation|tests?|testing)\b/i;
-  const cvApiTask = apiTask.exec(workBackground);
-  const postingApiTask = apiTask.exec(postingBody);
-  if (cvApiTask && postingApiTask) {
-    const evidence = excerptForTerms(workBackground, [cvApiTask[0]]);
-    const reason = excerptForTerms(postingBody, [postingApiTask[0]]);
-    if (evidence && reason) {
-      addRow({ skill_or_requirement: "API checks and validation", reason, evidence, kind: "literal_overlap" });
-      seen.add(`API checks and validation\0${reason}\0${evidence}`);
-    }
-  }
-  for (const path of paths) {
-    // Background values are full narratives; their compact schema keys are not task names.
+  collect(input.profile?.skills_interests_schema?.professional_background);
+  const sentences = (source: string) => source.split(/(?<=[!?])\s+|(?<=\.)\s+(?=[A-Z“])/u)
+    .map(sentence => sentence.trim()).filter(Boolean);
+  const cvSentences = background.flatMap(sentences);
+  const postingSentences = sentences(postingBody);
+  const requiredStart = /required\s+skills\s*(?:&|and)\s*experience/i.exec(postingBody)?.index ?? -1;
+  const nextSection = requiredStart >= 0
+    ? /\b(?:ideal\s+candidate|nice\s+to\s+have|preferred\s+qualifications|what\s+we\s+offer)\b/i.exec(postingBody.slice(requiredStart + 1))
+    : null;
+  const requiredEnd = nextSection ? requiredStart + 1 + nextSection.index : postingBody.length;
+  const isRequiredSentence = (sentence: string) => {
+    const index = postingBody.indexOf(sentence, Math.max(0, requiredStart));
+    return requiredStart >= 0 && index >= requiredStart && index < requiredEnd;
+  };
+  const roots = (label: string) => [...new Set(label.split(/[^\p{L}\p{N}+#]+/u)
+    .filter(word => [...word].length >= 5 && !explanationStopWords.has(word.toLocaleLowerCase()))
+    .map(skillRoot))].sort((left, right) => right.length - left.length);
+  const containsRoot = (sentence: string, root: string) => [...sentence.matchAll(/[\p{L}\p{N}]+/gu)]
+    .some(match => skillRoot(match[0]) === root);
+  const actionText = /\b(?:align|analy[sz]e|build|conduct|coordinate|create|deliver|design|develop|drive|establish|evaluate|implement|investigate|lead|maintain|manage|monitor|own|plan|prepare|reconcile|review|support|test|translate|troubleshoot|write)\b/i;
+  const candidates: Array<{ match: { skill_or_requirement: string; reason: string; evidence: string; kind: "literal_overlap" }; scoreIndex: number }> = [];
+  const seenSkills = new Set<string>();
+  for (const [scoreIndex, path] of paths.entries()) {
     if (path[0] !== "skills_interests_schema" || path[1] !== "skills") continue;
-    let value: any = input.profile;
-    for (const key of path) value = Array.isArray(value) ? key : value?.[key] ?? key;
-    const valueText = typeof value === "string" ? value : path.at(-1) || "";
-    const labelPathStopWords = new Set(["skills_interests_schema", "behavioral_points_schema", "skills", "areas_of_interest",
-      "professional_background", "compensation", "adaptability", "work_preferences", "personal_traits", "career_aspirations",
-      "level", "years", "projects"]);
-    const label = (path.slice().reverse().find(part => !labelPathStopWords.has(part))?.replace(/_/g, " ")
-      || (valueText.trim().split(/\s+/).length <= 5 ? valueText.trim() : "Profile item")).slice(0, 80);
-    const labelParts = label.split(/[^\p{L}\p{N}+#.]+/u).filter(Boolean);
-    if (labelParts.length > 1) {
-      // Keep a multiword skill label only when it appears as one phrase in both sources.
-      const escapedParts = labelParts.map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-      const phrase = new RegExp(`(?<![\\p{L}\\p{N}])${escapedParts.join("[\\s\\p{Pd}]+")}(?![\\p{L}\\p{N}])`, "iu");
-      const postingMatch = phrase.exec(postingBody);
-      const cvMatch = phrase.exec(workBackground);
-      if (postingMatch && cvMatch) {
-        const postingQuote = excerptForTerms(postingBody, [postingMatch[0]]);
-        const evidence = excerptForTerms(workBackground, [cvMatch[0]]);
-        if (postingQuote && evidence && postingBody.includes(postingQuote) && input.cv.includes(evidence)) {
-          addRow({ skill_or_requirement: label, reason: postingQuote, evidence, kind: "literal_overlap" });
-        }
-      }
-      continue;
-    }
-    const terms = profileTerms(valueText, path);
-    const sharedTerms = terms.filter(term => termPattern(term).test(postingBody) && termPattern(term).test(input.cv));
-    // One shared term can be generic (for example, "testing") and cannot
-    // support a named profile task. Require two informative shared terms.
-    if (sharedTerms.length < 2) continue;
-    const chosenTerms = sharedTerms.slice(0, 2);
-    const postingQuote = excerptForTerms(postingBody, chosenTerms);
-    const evidence = excerptForTerms(input.cv, chosenTerms);
-    if (!postingQuote || !evidence || !postingBody.includes(postingQuote) || !input.cv.includes(evidence)) continue;
-    const reason = postingQuote;
-    const identity = `${path.join("/")}\0${reason}\0${evidence}`;
-    if (seen.has(identity)) continue;
-    seen.add(identity);
-    addRow({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
-    if (rows.length >= 4) break;
+    const label = (path.at(-1) || "").replace(/_/g, " ").trim();
+    const normalized = label.toLocaleLowerCase().replace(/\s+/g, " ");
+    if (!label || seenSkills.has(normalized)) continue;
+    const anchor = roots(label).find(root => {
+      const cvSentence = cvSentences.find(sentence => sentence.length <= 180 && containsRoot(sentence, root));
+      const postingSentence = postingSentences.filter(sentence => sentence.length <= 180 && containsRoot(sentence, root))
+        .sort((left, right) => Number(isRequiredSentence(right)) - Number(isRequiredSentence(left))
+          || Number(actionText.test(right)) - Number(actionText.test(left)))[0];
+      if (!cvSentence || !postingSentence) return false;
+      if (!input.cv.includes(cvSentence) || !input.description.includes(postingSentence)) return false;
+      candidates.push({ match: { skill_or_requirement: label, reason: postingSentence, evidence: cvSentence, kind: "literal_overlap" }, scoreIndex });
+      return true;
+    });
+    if (anchor) seenSkills.add(normalized);
+    if (candidates.length >= 8) break;
   }
-  // A singular skill label can differ from the wording used in both source documents
-  // (for example, Interviewing versus interviews). Keep the source word identical.
-  const cvWordsByRoot = new Map<string, Set<string>>();
-  for (const match of workBackground.matchAll(/[\p{L}]{8,}/gu)) {
-    const word = match[0].toLocaleLowerCase();
-    if (explanationStopWords.has(word)) continue;
-    const root = skillRoot(word);
-    cvWordsByRoot.set(root, (cvWordsByRoot.get(root) ?? new Set()).add(word));
-  }
-  for (const path of paths) {
-    if (rows.length >= 4) break;
-    if (path[0] !== "skills_interests_schema" || path[1] !== "skills") continue;
-    const label = path.at(-1) || "";
-    const labelParts = label.split(/[^\p{L}\p{N}+#.]+/u).filter(Boolean);
-    if (labelParts.length > 1) continue;
-    let score: any = scores;
-    for (const key of path) score = score?.[key];
-    // Use a specific word from the scored skill label as the anchor. Requiring
-    // eight letters prevents generic single-word overlaps such as budget/perks.
-    const anchors = label.split(/[^\p{L}\p{N}]+/u)
-      .filter(word => [...word].length >= 8
-        && !explanationStopWords.has(word.toLocaleLowerCase())
-        && !genericSkillAnchors.has(word.toLocaleLowerCase()));
-    if (anchors.length === 0) continue;
-    if (typeof score !== "number" || score <= 0.5) continue;
-    const cvTerms: string[] = [];
-    const postingTerms: string[] = [];
-    let allAnchorsMatched = true;
-    for (const anchor of anchors) {
-      const words = cvWordsByRoot.get(skillRoot(anchor));
-      const cvCandidates = [...(words ?? [])]
-        .sort((left, right) => Number(right === anchor.toLocaleLowerCase()) - Number(left === anchor.toLocaleLowerCase()));
-      let matched: { cvWord: string; postingWord: string } | undefined;
-      for (const cvWord of cvCandidates) {
-        // Match inflections by root, preferring exact spellings when available.
-        const postingWords = [...postingBody.matchAll(/[\p{L}]{8,}/gu)]
-          .filter(match => {
-            const before = postingBody.charAt(match.index! - 1);
-            const after = postingBody.charAt(match.index! + match[0].length);
-            return !/[\p{L}\p{N}\p{Pd}]/u.test(before)
-              && !/[\p{L}\p{N}\p{Pd}]/u.test(after)
-              && skillRoot(match[0]) === skillRoot(cvWord);
-          })
-          .sort((left, right) => Number(right[0].toLocaleLowerCase() === anchor.toLocaleLowerCase())
-            - Number(left[0].toLocaleLowerCase() === anchor.toLocaleLowerCase()));
-        if (postingWords[0]) {
-          matched = { cvWord, postingWord: postingWords[0][0] };
-          break;
-        }
-      }
-      if (!matched) {
-        allAnchorsMatched = false;
-        break;
-      }
-      cvTerms.push(matched.cvWord);
-      postingTerms.push(matched.postingWord);
-    }
-    if (!allAnchorsMatched) continue;
-    const reason = excerptForTerms(postingBody, postingTerms);
-    const evidence = excerptForTerms(workBackground, cvTerms);
-    if (!reason || !evidence) continue;
-    const identity = `${path.join("/")}\0${reason}\0${evidence}`;
-    if (seen.has(identity)) continue;
-    seen.add(identity);
-    addRow({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
-  }
-  return rows;
+  return candidates;
 }
+type ScoredSkillCandidate = ReturnType<typeof scoredSkillCandidates>[number];
 
 /** Validate exact score paths before a provider result may become a stored rating. */
 export function validateAnalysis(analysis: any, projection: Record<string, any>, sources?: { description: string; cv: string }) {
@@ -277,10 +145,16 @@ export function validateAnalysis(analysis: any, projection: Record<string, any>,
         || !sources.description.includes(match.reason) || !sources.cv.includes(match.evidence))) {
       throw new Error("Ranking overlap excerpt does not match its source.");
     }
+    for (const field of ["posting_requirement_probability", "cv_evidence_probability"]) {
+      if (match[field] !== undefined
+        && (typeof match[field] !== "number" || !Number.isFinite(match[field]) || match[field] < 0 || match[field] > 1)) {
+        throw new Error("Invalid ranking explanation probability.");
+      }
+    }
   }
 }
 
-/** Ask Jev one ordinal fit question for each candidate leaf, then normalize to [0,1]. */
+/** Ask Jev for each profile score and validate a bounded set of exact-source explanations in the same request. */
 export async function rankWithJev(input: { description: string; cv: string; profile: any; schema: unknown; model: string }) {
   const projection = scoreProjection(input.profile);
   const questions: Record<string, any> = {};
@@ -309,8 +183,17 @@ export async function rankWithJev(input: { description: string; cv: string; prof
   walk(projection, []);
   if (paths.length === 0) {
     return { analysis: { job_summary: { skills_interests_schema: {}, behavioral_points_schema: {} },
-      candidate_match: { ...projection, matches: [] } }, model: input.model };
+      candidate_match: { ...projection, matches: [] } }, model: input.model, semanticEvaluations: [] };
   }
+  const candidateMatches = scoredSkillCandidates(input, paths);
+  const semanticIds = candidateMatches.map((_, index) => ({
+    posting: `m${index.toString().padStart(4, "0")}a`, evidence: `m${index.toString().padStart(4, "0")}b`,
+  }));
+  candidateMatches.forEach(({ match }, index) => {
+    const ids = semanticIds[index]!;
+    questions[ids.posting] = { type: "noul", instructions: `Does this exact job posting excerpt describe an actual responsibility or qualification, rather than a job title, SEO keyword list, company description, or benefits text? Use the surrounding job description for context. Excerpt: ${JSON.stringify(match.reason)}` };
+    questions[ids.evidence] = { type: "noul", instructions: `Does this exact professional-background excerpt show the candidate performing the same work task or specific skill named in the job requirement? Judge the work itself; do not rely on a title, shared generic noun, aspiration, benefits, or adjacent domain. Candidate scored skill: ${JSON.stringify(match.skill_or_requirement)}. Job requirement excerpt: ${JSON.stringify(match.reason)}. Candidate work-history excerpt: ${JSON.stringify(match.evidence)}` };
+  });
   const key = process.env.TYPESAFE_API_KEY?.trim();
   if (!key) throw new Error("TYPESAFE_API_KEY is not configured on the backend.");
   const response = await fetch("https://api.typesafe.ai/v1/systemone", {
@@ -320,7 +203,8 @@ export async function rankWithJev(input: { description: string; cv: string; prof
   });
   if (!response.ok) throw new Error(`Jev returned status ${response.status}.`);
   const result = await response.json() as any;
-  if (!result.answers || Object.keys(result.answers).length !== paths.length || typeof result.model !== "string") throw new Error("Incomplete Jev response.");
+  const expectedAnswerCount = paths.length + semanticIds.length * 2;
+  if (!result.answers || Object.keys(result.answers).length !== expectedAnswerCount || typeof result.model !== "string") throw new Error("Incomplete Jev response.");
   const trees = structuredClone(projection);
   paths.forEach((path, index) => {
     const answer = result.answers[`q${index.toString().padStart(4, "0")}`];
@@ -329,6 +213,31 @@ export async function rankWithJev(input: { description: string; cv: string; prof
     for (const key of path.slice(0, -1)) target = target[key];
     target[path.at(-1)!] = answer.score / 3;
   });
+  const matches: Array<ScoredSkillCandidate["match"] & { posting_requirement_probability: number; cv_evidence_probability: number }> = [];
+  const semanticEvaluations: Array<ScoredSkillCandidate["match"] & {
+    candidate_score: number; posting_requirement_probability: number; cv_evidence_probability: number; supported: boolean;
+  }> = [];
+  const seenMatches = new Set<string>();
+  candidateMatches.forEach(({ match, scoreIndex }, index) => {
+    const ids = semanticIds[index]!;
+    const postingAnswer = result.answers[ids.posting];
+    const evidenceAnswer = result.answers[ids.evidence];
+    if (postingAnswer?.type !== "noul" || typeof postingAnswer.noul !== "number" || !Number.isFinite(postingAnswer.noul)
+      || postingAnswer.noul < 0 || postingAnswer.noul > 1
+      || evidenceAnswer?.type !== "noul" || typeof evidenceAnswer.noul !== "number" || !Number.isFinite(evidenceAnswer.noul)
+      || evidenceAnswer.noul < 0 || evidenceAnswer.noul > 1) throw new Error("Invalid Jev semantic answer.");
+    const scorePath = paths[scoreIndex]!;
+    let score: any = trees;
+    for (const key of scorePath) score = score?.[key];
+    const supported = score > 0.5 && postingAnswer.noul >= 0.5 && evidenceAnswer.noul > 0.55;
+    semanticEvaluations.push({ ...match, candidate_score: score, posting_requirement_probability: postingAnswer.noul,
+      cv_evidence_probability: evidenceAnswer.noul, supported });
+    if (!supported) return;
+    const identity = `${match.reason}\0${match.evidence}`;
+    if (seenMatches.has(identity)) return;
+    seenMatches.add(identity);
+    matches.push({ ...match, posting_requirement_probability: postingAnswer.noul, cv_evidence_probability: evidenceAnswer.noul });
+  });
   return { analysis: { job_summary: { skills_interests_schema: {}, behavioral_points_schema: {} },
-    candidate_match: { ...trees, matches: literalMatches(input, paths, trees), profile_item_text: profileItemText } }, model: result.model };
+    candidate_match: { ...trees, matches, profile_item_text: profileItemText } }, model: result.model, semanticEvaluations };
 }
