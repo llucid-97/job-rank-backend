@@ -110,7 +110,8 @@ function literalMatches(input: { description: string; cv: string; profile: any }
     }
   }
   for (const path of paths) {
-    if (path[0] !== "skills_interests_schema" || !["skills", "professional_background"].includes(path[1] || "")) continue;
+    // Background values are full narratives; their compact schema keys are not task names.
+    if (path[0] !== "skills_interests_schema" || path[1] !== "skills") continue;
     let value: any = input.profile;
     for (const key of path) value = Array.isArray(value) ? key : value?.[key] ?? key;
     const valueText = typeof value === "string" ? value : path.at(-1) || "";
