@@ -9,6 +9,10 @@ function hash(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function hashCandidateText(value: string) {
+  return hash(value);
+}
+
 export class CandidateContextChangedError extends Error {
   constructor() {
     super("Your CV or profile schema changed. Please try again.");
@@ -21,6 +25,20 @@ export async function loadCandidateSchema() {
     "utf8",
   );
   return { schemaText, schemaHash: hash(schemaText), policyVersion };
+}
+
+/** Validate the complete profile shape against the same schema used for generation. */
+export async function validateSkillsProfile(value: unknown) {
+  const { schemaText } = await loadCandidateSchema();
+  const schema = JSON.parse(schemaText);
+  const rootSchema = {
+    type: "object",
+    properties: schema,
+    required: Object.keys(schema),
+    additionalProperties: false,
+  };
+  const validate = new Ajv({ allErrors: true }).compile(rootSchema);
+  return validate(value) ? null : validate.errors;
 }
 
 /** Reject superseded or foreign CVs before their profiles can be reused or published. */
@@ -85,46 +103,45 @@ export async function generateCandidateProfile(
     process.env.SKILLS_JSON_GENERATION_MODEL ?? "openai/gpt-5.6-luna";
   const cvHash = hash(document.extracted_text);
 
-  // Return an existing profile instead of paying for another request.
-  const { data: existing, error: existingError } = await supabaseAdmin
+  // Reuse the current profile only. Capture its ID so an edit made while the
+  // provider is running wins over this stale generation.
+  const { data: current, error: currentError } = await supabaseAdmin
     .from("candidate_profiles")
-    .select("*")
+    .select("id, cv_hash, schema_hash, policy_version")
     .eq("user_id", userId)
-    .eq("cv_hash", cvHash)
-    .eq("schema_hash", schemaHash)
-    .eq("policy_version", policyVersion)
+    .eq("cv_document_id", document.id)
+    .eq("is_current", true)
     .maybeSingle();
 
-  if (existing) {
+  if (currentError) throw currentError;
+  const expectedProfileId = current?.id ?? null;
+  if (
+    current && current.cv_hash === cvHash &&
+    current.schema_hash === schemaHash &&
+    current.policy_version === policyVersion
+  ) {
     await assertActiveCv(userId, document.id);
-    // Rebind identical CV content to its new document, then reject a superseded selection.
-    if (existing.cv_document_id !== document.id) {
-      const { data: updatedProfile, error: updateError } = await supabaseAdmin
-        .from("candidate_profiles")
-        .update({
-          cv_document_id: document.id,
-        })
-        .eq("id", existing.id)
-        .eq("user_id", userId)
-        .select()
-        .single();
-
-      if (updateError) throw updateError;
-
-      await assertActiveCv(userId, document.id);
-
-      return {
-        profile: updatedProfile,
-        generated: false,
-      };
-    }
-
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from("candidate_profiles")
+      .select("*")
+      .eq("id", current.id)
+      .eq("user_id", userId)
+      .single();
+    if (existingError) throw existingError;
+    const { data: stillCurrent, error: verifyError } = await supabaseAdmin
+      .from("candidate_profiles")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("cv_document_id", document.id)
+      .eq("is_current", true)
+      .maybeSingle();
+    if (verifyError) throw verifyError;
+    if (stillCurrent?.id !== existing.id) throw new CandidateContextChangedError();
     return {
       profile: existing,
       generated: false,
     };
   }
-  if (existingError) throw existingError;
 
   const apiKey = process.env.OPENROUTER_API_KEY;
 
@@ -201,21 +218,25 @@ export async function generateCandidateProfile(
 
   await assertActiveCv(userId, document.id);
 
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from("candidate_profiles")
-    .insert({
-      user_id: userId,
-      cv_document_id: document.id,
-      cv_hash: cvHash,
-      schema_hash: schemaHash,
-      policy_version: policyVersion,
-      skills_profile: skillsProfile,
-      model,
-    })
-    .select()
-    .single();
+  const { data: profile, error: profileError } = await supabaseAdmin.rpc(
+    "publish_candidate_profile",
+    {
+      p_user_id: userId,
+      p_cv_document_id: document.id,
+      p_expected_profile_id: expectedProfileId,
+      p_cv_hash: cvHash,
+      p_schema_hash: schemaHash,
+      p_policy_version: policyVersion,
+      p_skills_profile: skillsProfile,
+      p_model: model,
+    },
+  );
 
-  if (profileError) throw profileError;
+  if (profileError) {
+    if (profileError.code === "P0001") throw new CandidateContextChangedError();
+    throw profileError;
+  }
+  if (!profile) throw new CandidateContextChangedError();
 
   await assertActiveCv(userId, document.id);
 

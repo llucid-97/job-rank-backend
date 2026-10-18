@@ -72,8 +72,7 @@ export async function generateCoverLetter(input: {
     .select("id, skills_profile")
     .eq("user_id", input.userId)
     .eq("cv_document_id", cv.id)
-    .order("created_at", { ascending: false })
-    .limit(1)
+    .eq("is_current", true)
     .maybeSingle();
 
   if (profileError) throw profileError;

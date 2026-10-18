@@ -24,8 +24,7 @@ export async function createRankingRun(
     .select("id, schema_hash, policy_version")
     .eq("user_id", userId)
     .eq("cv_document_id", activeCv.id)
-    .order("created_at", { ascending: false })
-    .limit(1)
+    .eq("is_current", true)
     .maybeSingle();
 
   if (profileError) throw profileError;

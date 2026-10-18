@@ -10,6 +10,7 @@ import { candidateDocumentUpload } from "./candidate_upload.middleware.js";
 import {
   generateSkillsProfile,
   getActiveSkillsProfile,
+  updateSkillsProfile,
 } from "./candidate_profile.controller.js";
 
 export const candidateRouter = Router();
@@ -34,6 +35,13 @@ candidateRouter.get(
   authenticate,
   requireActiveAccount,
   listCandidateDocuments,
+);
+
+candidateRouter.put(
+  "/profile",
+  authenticate,
+  requireActiveAccount,
+  updateSkillsProfile,
 );
 
 candidateRouter.delete(

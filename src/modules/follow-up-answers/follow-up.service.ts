@@ -89,8 +89,7 @@ export async function generateFollowUpAnswers(input: {
     .select("id, cv_document_id, skills_profile, schema_hash, policy_version")
     .eq("user_id", input.userId)
     .eq("cv_document_id", cv.id)
-    .order("created_at", { ascending: false })
-    .limit(1)
+    .eq("is_current", true)
     .maybeSingle();
 
   if (profileError) throw profileError;
