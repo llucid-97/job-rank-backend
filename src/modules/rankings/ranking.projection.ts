@@ -58,15 +58,7 @@ function termPattern(term: string): RegExp {
   return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu");
 }
 
-function excerptForTerms(source: string, terms: string[]): string | null {
-  const spans: Array<[number, number]> = [];
-  for (const term of terms) {
-    const match = termPattern(term).exec(source);
-    if (!match || match.index === undefined) return null;
-    spans.push([match.index, match.index + match[0].length]);
-  }
-  const start = Math.min(...spans.map(span => span[0]));
-  const end = Math.max(...spans.map(span => span[1]));
+function excerptForSpan(source: string, start: number, end: number): string | null {
   if (end - start > 180) return null;
 
   const before = source.slice(0, start);
@@ -84,7 +76,19 @@ function excerptForTerms(source: string, terms: string[]): string | null {
     while (right > end && !/\s/.test(source.charAt(right))) right--;
   }
   if (right - left > 180) return null;
-  const excerpt = source.slice(left, right).trim();
+  return source.slice(left, right).trim() || null;
+}
+
+function excerptForTerms(source: string, terms: string[]): string | null {
+  const spans: Array<[number, number]> = [];
+  for (const term of terms) {
+    const match = termPattern(term).exec(source);
+    if (!match || match.index === undefined) return null;
+    spans.push([match.index, match.index + match[0].length]);
+  }
+  const start = Math.min(...spans.map(span => span[0]));
+  const end = Math.max(...spans.map(span => span[1]));
+  const excerpt = excerptForSpan(source, start, end);
   return excerpt && terms.every(term => termPattern(term).test(excerpt)) ? excerpt : null;
 }
 
@@ -92,6 +96,24 @@ function excerptForTerms(source: string, terms: string[]): string | null {
 function literalMatches(input: { description: string; cv: string; profile: any }, paths: string[][], scores: Record<string, any>) {
   const rows: Array<{ skill_or_requirement: string; reason: string; evidence: string; kind: "literal_overlap" }> = [];
   const seen = new Set<string>();
+  const cvHeader = input.cv.split(/\r?\n/, 1)[0] || "";
+  const normalizeExcerpt = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const addRow = (row: typeof rows[number]) => {
+    if (cvHeader.includes(row.evidence)) return false;
+    const label = row.skill_or_requirement.toLocaleLowerCase().replace(/\s+/g, " ").trim();
+    const evidence = normalizeExcerpt(row.evidence);
+    const contained = (left: string, right: string) => left.includes(right) || right.includes(left);
+    const duplicateIndex = rows.findIndex(existing =>
+      existing.skill_or_requirement.toLocaleLowerCase().replace(/\s+/g, " ").trim() === label
+      && contained(normalizeExcerpt(existing.evidence), evidence));
+    if (duplicateIndex >= 0) {
+      const existing = rows[duplicateIndex]!;
+      if (row.reason.length + row.evidence.length > existing.reason.length + existing.evidence.length) rows[duplicateIndex] = row;
+      return false;
+    }
+    rows.push(row);
+    return true;
+  };
   const descriptionMarker = /\bDescription\s*:\s*/i.exec(input.description);
   const postingBody = descriptionMarker
     ? input.description.slice(descriptionMarker.index + descriptionMarker[0].length)
@@ -105,7 +127,7 @@ function literalMatches(input: { description: string; cv: string; profile: any }
     const evidence = excerptForTerms(input.cv, [cvApiTask[0]]);
     const reason = excerptForTerms(postingBody, [postingApiTask[0]]);
     if (evidence && reason) {
-      rows.push({ skill_or_requirement: "API checks and validation", reason, evidence, kind: "literal_overlap" });
+      addRow({ skill_or_requirement: "API checks and validation", reason, evidence, kind: "literal_overlap" });
       seen.add(`API checks and validation\0${reason}\0${evidence}`);
     }
   }
@@ -120,6 +142,22 @@ function literalMatches(input: { description: string; cv: string; profile: any }
       "level", "years", "projects"]);
     const label = (path.slice().reverse().find(part => !labelPathStopWords.has(part))?.replace(/_/g, " ")
       || (valueText.trim().split(/\s+/).length <= 5 ? valueText.trim() : "Profile item")).slice(0, 80);
+    const labelParts = label.split(/[^\p{L}\p{N}+#.]+/u).filter(Boolean);
+    if (labelParts.length > 1) {
+      // Keep a multiword skill label only when it appears as one phrase in both sources.
+      const escapedParts = labelParts.map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      const phrase = new RegExp(`(?<![\\p{L}\\p{N}])${escapedParts.join("[\\s\\p{Pd}]+")}(?![\\p{L}\\p{N}])`, "iu");
+      const postingMatch = phrase.exec(postingBody);
+      const cvMatch = phrase.exec(input.cv);
+      if (postingMatch && cvMatch) {
+        const postingQuote = excerptForTerms(postingBody, [postingMatch[0]]);
+        const evidence = excerptForTerms(input.cv, [cvMatch[0]]);
+        if (postingQuote && evidence && postingBody.includes(postingQuote) && input.cv.includes(evidence)) {
+          addRow({ skill_or_requirement: label, reason: postingQuote, evidence, kind: "literal_overlap" });
+        }
+      }
+      continue;
+    }
     const terms = profileTerms(valueText, path);
     const sharedTerms = terms.filter(term => termPattern(term).test(postingBody) && termPattern(term).test(input.cv));
     // One shared term can be generic (for example, "testing") and cannot
@@ -133,7 +171,7 @@ function literalMatches(input: { description: string; cv: string; profile: any }
     const identity = `${path.join("/")}\0${reason}\0${evidence}`;
     if (seen.has(identity)) continue;
     seen.add(identity);
-    rows.push({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
+    addRow({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
     if (rows.length >= 4) break;
   }
   // A singular skill label can differ from the wording used in both source documents
@@ -149,6 +187,7 @@ function literalMatches(input: { description: string; cv: string; profile: any }
     if (rows.length >= 4) break;
     if (path[0] !== "skills_interests_schema" || path[1] !== "skills") continue;
     const label = path.at(-1) || "";
+    if (label.split(/[^\p{L}\p{N}+#.]+/u).filter(Boolean).length > 1) continue;
     // Use a specific word from the scored skill label as the anchor. Requiring
     // eight letters prevents generic single-word overlaps such as budget/perks.
     const anchors = label.split(/[^\p{L}\p{N}]+/u)
@@ -198,7 +237,7 @@ function literalMatches(input: { description: string; cv: string; profile: any }
     const identity = `${path.join("/")}\0${reason}\0${evidence}`;
     if (seen.has(identity)) continue;
     seen.add(identity);
-    rows.push({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
+    addRow({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
   }
   // Profile extraction can omit a concrete skill, but only surface a phrase
   // when the exact adjacent wording also appears in professional background.
@@ -230,17 +269,16 @@ function literalMatches(input: { description: string; cv: string; profile: any }
     const postingOccurrence = adjacent.exec(postingBody);
     const cvOccurrence = adjacent.exec(input.cv);
     if (!postingOccurrence || !cvOccurrence) continue;
-    const postingQuote = excerptForTerms(postingBody.slice(postingOccurrence.index), terms);
-    const evidence = excerptForTerms(input.cv.slice(cvOccurrence.index), terms);
+    const postingQuote = excerptForSpan(postingBody, postingOccurrence.index, postingOccurrence.index + postingOccurrence[0].length);
+    const evidence = excerptForSpan(input.cv, cvOccurrence.index, cvOccurrence.index + cvOccurrence[0].length);
     if (!postingQuote || !evidence || !postingBody.includes(postingQuote) || !input.cv.includes(evidence)) continue;
-    rows.push({ skill_or_requirement: first[0] + " " + second[0],
+    addRow({ skill_or_requirement: first[0] + " " + second[0],
       reason: postingQuote, evidence, kind: "literal_overlap" });
     lastAddedIndex = index;
   }
   // A CV header can repeat the job title without showing shared work. Do not
   // present that title-only pair as a reason for fit.
-  const cvHeader = input.cv.split(/\r?\n/, 1)[0] || "";
-  return rows.filter(row => !cvHeader.includes(row.evidence));
+  return rows;
 }
 
 /** Validate exact score paths before a provider result may become a stored rating. */
