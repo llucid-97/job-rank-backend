@@ -159,32 +159,83 @@ function literalMatches(input: { description: string; cv: string; profile: any }
     let score: any = scores;
     for (const key of path) score = score?.[key];
     if (typeof score !== "number" || score <= 0.5) continue;
+    const cvTerms: string[] = [];
+    const postingTerms: string[] = [];
+    let allAnchorsMatched = true;
     for (const anchor of anchors) {
       const words = cvWordsByRoot.get(skillRoot(anchor));
-      if (!words) continue;
-      for (const cvWord of words) {
-        // Match inflections by root, while quoting the exact source spelling
-        // from each document (for example, interview/interviews).
-        const postingWord = [...postingBody.matchAll(/[\p{L}]{8,}/gu)]
-          .find(match => {
+      const cvCandidates = [...(words ?? [])]
+        .sort((left, right) => Number(right === anchor.toLocaleLowerCase()) - Number(left === anchor.toLocaleLowerCase()));
+      let matched: { cvWord: string; postingWord: string } | undefined;
+      for (const cvWord of cvCandidates) {
+        // Match inflections by root, preferring exact spellings when available.
+        const postingWords = [...postingBody.matchAll(/[\p{L}]{8,}/gu)]
+          .filter(match => {
             const before = postingBody.charAt(match.index! - 1);
             const after = postingBody.charAt(match.index! + match[0].length);
             return !/[\p{L}\p{N}\p{Pd}]/u.test(before)
               && !/[\p{L}\p{N}\p{Pd}]/u.test(after)
               && skillRoot(match[0]) === skillRoot(cvWord);
-          })?.[0];
-        if (!postingWord) continue;
-        const reason = excerptForTerms(postingBody, [postingWord]);
-        const evidence = excerptForTerms(input.cv, [cvWord]);
-        if (!reason || !evidence) continue;
-        const identity = `${path.join("/")}\0${reason}\0${evidence}`;
-        if (seen.has(identity)) continue;
-        seen.add(identity);
-        rows.push({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
+          })
+          .sort((left, right) => Number(right[0].toLocaleLowerCase() === anchor.toLocaleLowerCase())
+            - Number(left[0].toLocaleLowerCase() === anchor.toLocaleLowerCase()));
+        if (postingWords[0]) {
+          matched = { cvWord, postingWord: postingWords[0][0] };
+          break;
+        }
+      }
+      if (!matched) {
+        allAnchorsMatched = false;
         break;
       }
-      if (rows.some(row => row.skill_or_requirement === label)) break;
+      cvTerms.push(matched.cvWord);
+      postingTerms.push(matched.postingWord);
     }
+    if (!allAnchorsMatched) continue;
+    const reason = excerptForTerms(postingBody, postingTerms);
+    const evidence = excerptForTerms(input.cv, cvTerms);
+    if (!reason || !evidence) continue;
+    const identity = `${path.join("/")}\0${reason}\0${evidence}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    rows.push({ skill_or_requirement: label, reason, evidence, kind: "literal_overlap" });
+  }
+  // Profile extraction can omit a concrete skill, but only surface a phrase
+  // when the exact adjacent wording also appears in professional background.
+  // Career goals and other profile sections do not establish experience.
+  const backgroundStatements: string[] = [];
+  function collectStatements(value: any): void {
+    if (typeof value === "string") backgroundStatements.push(value);
+    else if (Array.isArray(value)) value.forEach(collectStatements);
+    else if (value && typeof value === "object") Object.values(value).forEach(collectStatements);
+  }
+  collectStatements(input.profile?.skills_interests_schema?.professional_background);
+  const cvWords = [...input.cv.matchAll(/[\p{L}\p{N}]+/gu)];
+  const phraseSeen = new Set<string>();
+  let lastAddedIndex = -2;
+  for (let index = 0; index + 1 < cvWords.length && index < 600 && rows.length < 4; index++) {
+    if (index === lastAddedIndex + 1) continue;
+    const first = cvWords[index]!;
+    const second = cvWords[index + 1]!;
+    if (!/^\s+$/.test(input.cv.slice(first.index! + first[0].length, second.index!))) continue;
+    const terms = [first[0], second[0]];
+    if (terms.some(term => (term.length < 4 && !["qa", "ux"].includes(term.toLowerCase()))
+      || explanationStopWords.has(term.toLowerCase()))) continue;
+    const phrase = terms.join(" ").toLowerCase();
+    if (phraseSeen.has(phrase)) continue;
+    phraseSeen.add(phrase);
+    // Pair terms must be adjacent in the CV, posting, and a work-background statement.
+    const adjacent = new RegExp(`(?<![\\p{L}\\p{N}])${terms.join("\\s+")}(?![\\p{L}\\p{N}])`, "iu");
+    if (!backgroundStatements.some(statement => adjacent.test(statement))) continue;
+    const postingOccurrence = adjacent.exec(postingBody);
+    const cvOccurrence = adjacent.exec(input.cv);
+    if (!postingOccurrence || !cvOccurrence) continue;
+    const postingQuote = excerptForTerms(postingBody.slice(postingOccurrence.index), terms);
+    const evidence = excerptForTerms(input.cv.slice(cvOccurrence.index), terms);
+    if (!postingQuote || !evidence || !postingBody.includes(postingQuote) || !input.cv.includes(evidence)) continue;
+    rows.push({ skill_or_requirement: first[0] + " " + second[0],
+      reason: postingQuote, evidence, kind: "literal_overlap" });
+    lastAddedIndex = index;
   }
   // A CV header can repeat the job title without showing shared work. Do not
   // present that title-only pair as a reason for fit.
