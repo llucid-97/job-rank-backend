@@ -40,11 +40,16 @@ export function validateRequiredRequirements(
       || item.posting_evidence.length > 400 || !containsQuote(posting, item.posting_evidence)) invalid("posting quote");
     if (typeof item.reason !== "string" || !item.reason.trim() || item.reason.length > 400) invalid("reason");
     // A model may quote context even while saying the CV does not settle the point.
-    // Keep the conservative unknown verdict and do not present that quote as proof.
+    // An unverified CV quote cannot support met or unmet, but it should not hide
+    // the other, source-backed requirements in this review.
     if (item.status === "unknown") item.candidate_evidence = null;
     if (item.status !== "unknown" && (typeof item.candidate_evidence !== "string"
       || !item.candidate_evidence.trim() || item.candidate_evidence.length > 400
-      || !containsQuote(cv, item.candidate_evidence))) invalid("candidate quote");
+      || !containsQuote(cv, item.candidate_evidence))) {
+      item.status = "unknown";
+      item.candidate_evidence = null;
+      item.reason = "The automated check could not verify a CV quote for this requirement.";
+    }
     const identity = `${item.kind}:${item.requirement.trim().toLocaleLowerCase()}`;
     if (seen.has(identity)) throw new Error("Duplicate required requirement.");
     seen.add(identity);
