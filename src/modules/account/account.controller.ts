@@ -47,7 +47,7 @@ export async function getMe(
       supabaseAdmin
         .from("user_entitlements")
         .select(
-          "plan, account_status, monthly_request_limit, monthly_spend_limit_usd",
+          "plan, account_status, monthly_request_limit, ai_cost_limit_usd, period_started_at, period_ends_at",
         )
         .eq("user_id", userId)
         .single(),
@@ -71,7 +71,7 @@ export async function getMe(
         plan: entitlement.data.plan,
         accountStatus: entitlement.data.account_status,
         monthlyRequestLimit: entitlement.data.monthly_request_limit,
-        monthlySpendLimitUsd: entitlement.data.monthly_spend_limit_usd,
+        monthlySpendLimitUsd: entitlement.data.ai_cost_limit_usd,
         createdAt: profile.data.created_at,
       },
     });
@@ -134,7 +134,14 @@ export async function getPreferences(
       );
     }
 
-    response.json({ data: data ?? { source_site: "configured", location_mode: "all", country_scope: "global", jobs_fetch_limit: 50 } });
+    response.json({
+      data: data ?? {
+        source_site: "configured",
+        location_mode: "all",
+        country_scope: "global",
+        jobs_fetch_limit: 50,
+      },
+    });
   } catch (error) {
     next(error);
   }
@@ -150,7 +157,9 @@ export async function updatePreferences(
     const userId = request.auth!.userId;
 
     const updates = {
-      ...(input.sourceSettings !== undefined && { source_settings: input.sourceSettings }),
+      ...(input.sourceSettings !== undefined && {
+        source_settings: input.sourceSettings,
+      }),
       ...(input.searchQuery !== undefined && {
         search_query: input.searchQuery,
       }),

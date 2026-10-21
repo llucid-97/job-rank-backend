@@ -10,6 +10,8 @@ import { accountRouter } from "./modules/account/account.routes.js";
 import { candidateRouter } from "./modules/candidate/candidate.route.js";
 import { jobRouter } from "./modules/jobs/job.routes.js";
 import { rankingRouter } from "./modules/rankings/ranking.routes.js";
+import { handleStripeWebhook } from "./modules/billing/stripe-webhook.controller.js";
+import { billingRouter } from "./modules/billing/billing.route.js";
 
 export const app = express();
 
@@ -37,8 +39,12 @@ app.use(
   }),
 );
 
-// Provider-rich job snapshots need a larger body than ordinary account requests.
 app.use("/v1/jobs/workspace", express.json({ limit: "10mb" }));
+app.post(
+  "/v1/billing/webhooks/stripe",
+  express.raw({ type: "application/json" }),
+  handleStripeWebhook,
+);
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/", (_request, response) => {
@@ -62,6 +68,7 @@ app.use("/v1", accountRouter);
 app.use("/v1/candidate", candidateRouter);
 app.use("/v1/jobs", jobRouter);
 app.use("/v1/ranking-runs", rankingRouter);
+app.use("/v1/billing", billingRouter);
 app.use((request, response) => {
   response.status(404).json({
     error: {

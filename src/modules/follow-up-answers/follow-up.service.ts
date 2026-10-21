@@ -132,7 +132,7 @@ export async function generateFollowUpAnswers(input: {
 
   if (rankingError) throw rankingError;
 
-  const model = process.env.QUESTION_ANSWERING_CODEX_MODEL;
+  const model = process.env.QUESTION_ANSWERING_CODEX_MODEL ?? "openai/gpt-5.6-luna";
 
   const apiKey = process.env.OPENROUTER_API_KEY;
 
