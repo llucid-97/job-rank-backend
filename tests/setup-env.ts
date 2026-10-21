@@ -1,0 +1,17 @@
+Object.assign(process.env, {
+  NODE_ENV: "test",
+  FRONTEND_URL: "http://127.0.0.1:3001",
+  SUPABASE_URL: "https://synthetic.invalid",
+  SUPABASE_PUBLISHABLE_KEY: "synthetic-publishable",
+  SUPABASE_SECRET_KEY: "synthetic-secret",
+  OPENROUTER_API_KEY: "synthetic-openrouter",
+  JOBSDB_API_KEY: "synthetic-jobs",
+  TYPESAFE_API_KEY: "synthetic-typesafe",
+  SKILLS_JSON_GENERATION_MODEL: "synthetic-skills-model",
+  COVER_LETTER_CODEX_MODEL: "synthetic-cover-letter-model",
+  STRIPE_WEBHOOK_SECRET: "whsec_synthetic",
+  STRIPE_SECRET_KEY: "sk_test_synthetic",
+  STRIPE_CHECKOUT_CANCEL_URL: "http://127.0.0.1:3001/cancel",
+  STRIPE_CHECKOUT_SUCCESS_URL: "http://127.0.0.1:3001/success",
+  STRIPE_PORTAL_RETURN_URL: "http://127.0.0.1:3001/account",
+});
