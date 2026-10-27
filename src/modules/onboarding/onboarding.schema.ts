@@ -10,6 +10,10 @@ export const laneSchema = z.object({
   roles: text,
   location: text,
   workStyle: z.enum(["any", "remote", "hybrid", "onsite"]),
+  hiringCountries: z.record(z.string().trim().min(1).max(100), z.enum(["unknown", "authorized", "needs_sponsorship"]))
+    .refine((countries) => Object.keys(countries).length <= 250, "At most 250 countries are allowed.")
+    .default({}),
+  hasSalary: z.boolean().default(false),
   pay: text,
   seniority: text,
   avoid: text,
