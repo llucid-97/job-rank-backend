@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { extractDocumentText } from "./document_text.service.js";
 import { UnsafeDocumentError } from "./docx-limits.js";
+import { PdfResourceLimitError } from "./pdf-resource-limit.js";
 
 const bucketName = "candidate-documents";
 
@@ -101,7 +102,7 @@ export async function uploadCandidateDocument(
       data: document,
     });
   } catch (error) {
-    if (error instanceof UnsafeDocumentError) {
+    if (error instanceof UnsafeDocumentError || error instanceof PdfResourceLimitError) {
       return response.status(413).json({ error: { code: "UNSAFE_DOCUMENT", message: error.message } });
     }
     // Clean up only after confirmed rollback; preserve files when the commit outcome is uncertain.
