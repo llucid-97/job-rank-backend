@@ -205,9 +205,15 @@ export async function processStripeEvent(event: Stripe.Event) {
       break;
     case "customer.subscription.created":
     case "customer.subscription.updated":
-    case "customer.subscription.deleted":
-      await synchronizeSubscription(event.data.object);
+    case "customer.subscription.deleted": {
+      // Stripe does not guarantee delivery order; sync its current resource, not this event snapshot.
+      const eventSubscription = event.data.object as Stripe.Subscription;
+      const currentSubscription = await getStripe().subscriptions.retrieve(
+        eventSubscription.id,
+      );
+      await synchronizeSubscription(currentSubscription);
       break;
+    }
     case "invoice.paid":
     case "invoice.payment_failed":
       await synchronizeInvoice(event.data.object);
