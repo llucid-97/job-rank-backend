@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Request, Response } from "express";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { extractDocumentText } from "./document_text.service.js";
+import { UnsafeDocumentError } from "./docx-limits.js";
 
 const bucketName = "candidate-documents";
 
@@ -100,6 +101,9 @@ export async function uploadCandidateDocument(
       data: document,
     });
   } catch (error) {
+    if (error instanceof UnsafeDocumentError) {
+      return response.status(413).json({ error: { code: "UNSAFE_DOCUMENT", message: error.message } });
+    }
     // Clean up only after confirmed rollback; preserve files when the commit outcome is uncertain.
     let storageAction = "preserved; confirm upload/database outcome before cleanup";
     if (databaseRejected && storagePath) {

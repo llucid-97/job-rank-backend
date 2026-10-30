@@ -1,3 +1,5 @@
+import { ownerJob } from "../jobs/owner-job.js";
+import { consumeQuota } from "../provider-proxy/provider-quota.js";
 import { createHash } from "node:crypto";
 import { rankingConfiguration, rankingVersion } from "./ranking.configuration.js";
 import { supabaseAdmin } from "../../config/supabase.js";
@@ -230,6 +232,9 @@ async function rankOneJob(
     });
 
     await assertActiveCv(context.userId!, context.cvDocumentId);
+    const countLeaves = (value: any): number => value === true ? 1 : Object.values(value).reduce<number>((sum, child) => sum + countLeaves(child), 0);
+    const units = context.classifier === "jev" ? countLeaves(scoreProjection(context.skillsProfile)) : 1;
+    if (units) await consumeQuota(context.userId!, context.classifier, units);
     const typed = context.classifier === "jev" ? await rankWithJev({ description: job.description, cv: context.cvContent,
       profile: context.skillsProfile, schema: context.schema, model: context.model }) : null;
     const result = typed ? { analysis: typed.analysis, providerRequestId: null, inputTokens: 0, outputTokens: 0, costUsd: 0 } : await callOpenRouter(prompt, context.model);
@@ -238,11 +243,11 @@ async function rankOneJob(
 
     // A removal or changed description must not publish an obsolete analysis.
     const { data: association, error: associationError } = await supabaseAdmin
-      .from("user_jobs").select("job_id,jobs(description)")
+      .from("user_jobs").select("job_id,workspace_data,jobs(description)")
       .eq("user_id", context.userId).eq("job_id", job.id).maybeSingle();
     if (associationError) throw associationError;
     const currentJob = association?.jobs as unknown as { description: string } | null;
-    if (!association || currentJob?.description !== job.description) {
+    if (!association || !currentJob || ownerJob(currentJob, association.workspace_data).description !== job.description) {
       throw new Error("The saved job changed during ranking. Please retry.");
     }
     const score = calculateCandidateScore(result.analysis);
@@ -389,24 +394,21 @@ export async function processRankingRun(
 
     const context = await loadRankingContext(runId, userId);
 
-    const { data: jobs, error: jobsError } = await supabaseAdmin
-      .from("jobs")
-      .select(
-        `
-          id,
-          title,
-          description,
-          location,
-          provider_payload
-        `,
-      )
-      .in("id", jobIds);
+    const { data: associations, error: jobsError } = await supabaseAdmin
+      .from("user_jobs")
+      .select("job_id,workspace_data,jobs(id,title,description,location,provider_payload)")
+      .eq("user_id", userId)
+      .in("job_id", jobIds);
 
     if (jobsError) throw jobsError;
-
-    if (!jobs || jobs.length !== jobIds.length) {
+    if (!associations || associations.length !== jobIds.length) {
       throw new Error("One or more selected jobs could not be loaded.");
     }
+    const jobs = associations.map(row => {
+      const job = row.jobs as unknown as DatabaseJob | null;
+      if (!job) throw new Error("One or more selected jobs could not be loaded.");
+      return ownerJob(job, row.workspace_data);
+    });
 
     let completedJobs = 0;
     let failedJobs = 0;
