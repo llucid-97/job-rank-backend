@@ -50,7 +50,7 @@ function extractProviderJobs(body: unknown): Record<string, unknown>[] {
 }
 
 async function readProviderResponse(response: Response): Promise<Buffer> {
-  if (!response.body) throw new Error("JobsDB returned an empty response.");
+  if (!response.body) return Buffer.alloc(0);
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;

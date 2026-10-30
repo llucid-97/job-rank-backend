@@ -56,3 +56,9 @@ test('JobsDB accepts a response exactly at the byte limit', async () => {
 
   assert.deepEqual(await searchJobsDb(input), []);
 });
+
+test('JobsDB preserves provider errors when the upstream response has no body', async () => {
+  globalThis.fetch = (async () => new Response(null, { status: 429 })) as typeof fetch;
+
+  await assert.rejects(searchJobsDb(input), (error: any) => error.statusCode === 502 && error.code === 'JOB_PROVIDER_UNAVAILABLE');
+});
