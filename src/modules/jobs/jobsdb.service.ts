@@ -3,6 +3,7 @@ import { TokenParser, Tokenizer, TokenType } from "@streamparser/json";
 import type { JobSearchInput } from "./job-search.schema.js";
 
 const maxProviderResponseBytes = 4 * 1024 * 1024;
+const maxProviderJsonDepth = 128;
 
 function resolveTimeFrame(days: number) {
   if (days <= 1) return "24h";
@@ -71,6 +72,10 @@ export function extractProviderJobs(responseBody: Buffer, limit: number): Record
   };
 
   tokenizer.onToken = ({ token, value }) => {
+    const opensContainer = token === TokenType.LEFT_BRACE || token === TokenType.LEFT_BRACKET;
+    if (opensContainer && frames.length >= maxProviderJsonDepth) {
+      throw new Error("JobsDB response exceeded the maximum JSON nesting depth.");
+    }
     documentParser.write({ token, value });
 
     if (activeRecord) {

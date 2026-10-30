@@ -77,10 +77,25 @@ test('JobsDB streaming parser preserves last duplicate key semantics and rejects
     [{ id: 'fallback' }],
   );
 
-  for (const invalidBody of ['{"jobs":[{"id":"one"}]} trailing', '', '  ', '\uFEFF{"jobs":[]}']) {
+  const overDepth = '['.repeat(129) + ']'.repeat(129);
+  for (const invalidBody of [
+    '{"jobs":[{"id":"one"}]} trailing',
+    '',
+    '  ',
+    '\uFEFF{"jobs":[]}',
+    overDepth,
+  ]) {
     globalThis.fetch = (async () => new Response(invalidBody)) as typeof fetch;
     await assert.rejects(searchJobsDb(input), /JobsDB returned an invalid JSON response/);
   }
+});
+
+test('JobsDB streaming parser accepts 128 nesting levels and rejects level 129', () => {
+  const atLimit = Buffer.from('['.repeat(128) + ']'.repeat(128));
+  assert.deepEqual(extractProviderJobs(atLimit, 2), []);
+
+  const overLimit = Buffer.from('['.repeat(129) + ']'.repeat(129));
+  assert.throws(extractProviderJobs.bind(null, overLimit, 2), /maximum JSON nesting depth/);
 });
 
 test('JobsDB does not materialize every compact provider record before applying the result limit', () => {
