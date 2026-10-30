@@ -1,5 +1,5 @@
--- Direct-to-Storage candidate uploads stay private and are retained only long
--- enough to outlive the signed upload token. Final candidate objects are Markdown.
+-- Prepare staged uploads without breaking the currently deployed API, which
+-- still writes the original PDF/DOCX/TXT bytes to candidate-document storage.
 begin;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -7,7 +7,7 @@ values
   ('candidate-document-staging', 'candidate-document-staging', false, 15728640,
     array['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain']),
   ('candidate-documents', 'candidate-documents', false, 4194304,
-    array['text/markdown', 'text/plain'])
+    array['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown'])
 on conflict (id) do update set
   public = excluded.public,
   file_size_limit = excluded.file_size_limit,
