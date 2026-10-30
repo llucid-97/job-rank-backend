@@ -6,6 +6,7 @@ import { extractDocumentText } from "./document_text.service.js";
 import { DocxResourceLimitError, UnsafeDocumentError } from "./docx-limits.js";
 import { PdfResourceLimitError } from "./pdf-resource-limit.js";
 import { PdfExtractionError } from "./pdf-extraction-error.js";
+import { PdfSandboxConfigurationError } from "./pdf-sandbox-extraction.service.js";
 
 const bucketName = "candidate-documents";
 const stagingBucketName = "candidate-document-staging";
@@ -24,6 +25,12 @@ export function mapFinalizationDocumentError(error: unknown): { status: number; 
   }
   if (error instanceof UnsafeDocumentError) {
     return { status: 422, code: "INVALID_DOCUMENT", message: error.message };
+  }
+  if (error instanceof PdfExtractionError) {
+    return { status: 422, code: "INVALID_DOCUMENT", message: error.message };
+  }
+  if (error instanceof PdfSandboxConfigurationError) {
+    return { status: 503, code: "PDF_EXTRACTION_UNAVAILABLE", message: "PDF processing is temporarily unavailable." };
   }
   return null;
 }
@@ -386,6 +393,9 @@ export async function uploadCandidateDocument(
     }
     if (error instanceof PdfExtractionError) {
       return response.status(422).json({ error: { code: "INVALID_DOCUMENT", message: error.message } });
+    }
+    if (error instanceof PdfSandboxConfigurationError) {
+      return response.status(503).json({ error: { code: "PDF_EXTRACTION_UNAVAILABLE", message: "PDF processing is temporarily unavailable." } });
     }
     // Clean up only after confirmed rollback; preserve files when the commit outcome is uncertain.
     let storageAction = "preserved; confirm upload/database outcome before cleanup";

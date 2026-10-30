@@ -59,9 +59,11 @@ is unchanged.
 
 ## Integration point
 
-Call `extractPdfTextInSandbox(buffer)` only for PDFs. Keep DOCX and TXT routed
-through the existing in-process extractor. The function fails closed when
-`PDF_SANDBOX_SNAPSHOT_ID` is absent; it does not fall back to local PDF.js.
+Both the staged-upload finalizer and legacy multipart upload use
+`extractDocumentText`, which sends PDFs to `extractPdfTextInSandbox` and keeps
+DOCX/TXT in the existing in-process extractors. The PDF path fails closed when
+`PDF_SANDBOX_SNAPSHOT_ID` is absent; it does not fall back to local PDF.js and
+returns a service-unavailable response until the snapshot is configured.
 
 The current direct-upload finalizer still materializes the staged 15 MiB file
 as a Buffer before calling the extractor. Sandbox isolation bounds parser

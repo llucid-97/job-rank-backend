@@ -16,14 +16,18 @@ test("direct finalization maps parser resource limits to 413 and malformed DOCX 
     COVER_LETTER_CODEX_MODEL: "synthetic",
   });
 
-  const [{ mapFinalizationDocumentError }, { DocxResourceLimitError, UnsafeDocumentError }, { PdfResourceLimitError }] = await Promise.all([
+  const [{ mapFinalizationDocumentError }, { DocxResourceLimitError, UnsafeDocumentError }, { PdfResourceLimitError }, { PdfExtractionError }, { PdfSandboxConfigurationError }] = await Promise.all([
     import("../src/modules/candidate/candidate.controller.ts"),
     import("../src/modules/candidate/docx-limits.ts"),
     import("../src/modules/candidate/pdf-resource-limit.ts"),
+    import("../src/modules/candidate/pdf-extraction-error.ts"),
+    import("../src/modules/candidate/pdf-sandbox-extraction.service.ts"),
   ]);
 
   assert.equal(mapFinalizationDocumentError(new PdfResourceLimitError()).status, 413);
   assert.equal(mapFinalizationDocumentError(new DocxResourceLimitError()).status, 413);
   assert.equal(mapFinalizationDocumentError(new UnsafeDocumentError()).status, 422);
+  assert.equal(mapFinalizationDocumentError(new PdfExtractionError()).status, 422);
+  assert.equal(mapFinalizationDocumentError(new PdfSandboxConfigurationError()).status, 503);
   assert.equal(mapFinalizationDocumentError(new Error("storage unavailable")), null);
 });

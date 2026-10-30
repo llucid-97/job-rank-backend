@@ -1,12 +1,14 @@
 import mammoth from "mammoth";
 import { checkDocxSize, UnsafeDocumentError } from "./docx-limits.js";
 import { PdfResourceLimitError } from "./pdf-resource-limit.js";
+import { extractPdfTextInSandbox } from "./pdf-sandbox-extraction.service.js";
 
 const pdfExtractionTimeoutMs = 15_000;
 
 export async function extractDocumentText(
   buffer: Buffer,
   mimeType: string,
+  options: { extractPdf?: typeof extractPdfTextInSandbox } = {},
 ): Promise<string> {
   if (mimeType === "text/plain") {
     return buffer.toString("utf8").trim();
@@ -26,7 +28,7 @@ export async function extractDocumentText(
   }
 
   if (mimeType === "application/pdf") {
-    return extractPdfText(buffer);
+    return (options.extractPdf ?? extractPdfTextInSandbox)(buffer);
   }
 
   throw new Error("Unsupported document type.");
