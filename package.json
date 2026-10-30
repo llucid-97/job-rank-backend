@@ -22,6 +22,7 @@
   "type": "module",
   "dependencies": {
     "@napi-rs/canvas": "0.1.80",
+    "@streamparser/json": "^0.0.26",
     "@supabase/server": "^1.5.2",
     "@supabase/supabase-js": "^2.114.0",
     "@vercel/sandbox": "3.9.1",
