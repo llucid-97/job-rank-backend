@@ -36,7 +36,7 @@ const environmentSchema = z.object({
   STRIPE_CHECKOUT_CANCEL_URL: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
   STRIPE_CHECKOUT_SUCCESS_URL: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
   STRIPE_PORTAL_RETURN_URL: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
-  CRON_SECRET: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
+  CRON_SECRET: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),`r`n  PDF_SANDBOX_SNAPSHOT_ID: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
 });
 
 const result = environmentSchema.safeParse(process.env);
@@ -51,3 +51,4 @@ if (!result.success) {
 }
 
 export const env = result.data;
+
