@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { env } from "../../config/env.js";
 import { getStripe } from "../../config/stripe.js";
+import { AppError } from "../../middleware/error-handling.js";
 import {
   beginWebhookEvent,
   finishWebhookEvent,
@@ -55,10 +56,17 @@ export async function handleStripeWebhook(
       "Stripe webhook failed",
     );
     await finishWebhookEvent(event.id, claimToken, message.slice(0, 1000));
-    return response.status(500).json({
+    const statusCode = error instanceof AppError ? error.statusCode : 500;
+    return response.status(statusCode).json({
       error: {
-        code: "STRIPE_WEBHOOK_FAILED",
-        message: "Stripe webhook processing failed.",
+        code:
+          error instanceof AppError
+            ? error.code
+            : "STRIPE_WEBHOOK_FAILED",
+        message:
+          error instanceof AppError
+            ? error.message
+            : "Stripe webhook processing failed.",
       },
     });
   }

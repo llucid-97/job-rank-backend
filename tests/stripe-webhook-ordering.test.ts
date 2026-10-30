@@ -23,6 +23,7 @@ const { processStripeEvent } = await import(
 );
 
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
+const originalRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
 const stripe = getStripe();
 const originalRetrieve = stripe.subscriptions.retrieve.bind(
   stripe.subscriptions,
@@ -30,6 +31,7 @@ const originalRetrieve = stripe.subscriptions.retrieve.bind(
 
 afterEach(() => {
   supabaseAdmin.from = originalFrom as typeof supabaseAdmin.from;
+  supabaseAdmin.rpc = originalRpc as typeof supabaseAdmin.rpc;
   stripe.subscriptions.retrieve = originalRetrieve;
 });
 
@@ -87,10 +89,26 @@ function installDatabase(
   }) as typeof supabaseAdmin.from;
 }
 
+function installSubscriptionLock() {
+  let heldToken: string | null = null;
+  supabaseAdmin.rpc = (async (name: string, args: Record<string, any>) => {
+    if (name === "claim_stripe_subscription_sync") {
+      if (heldToken) return { data: "busy", error: null };
+      heldToken = args.p_claim_token;
+      return { data: "claimed", error: null };
+    }
+    assert.equal(name, "release_stripe_subscription_sync");
+    const released = heldToken === args.p_claim_token;
+    if (released) heldToken = null;
+    return { data: released, error: null };
+  }) as typeof supabaseAdmin.rpc;
+}
+
 test("stale subscription event syncs Stripe's current canceled state", async () => {
   const writes: Array<{ table: string; action: string; value: any }> = [];
   const retrieveCalls: string[] = [];
   installDatabase(writes);
+  installSubscriptionLock();
   stripe.subscriptions.retrieve = (async (id: string) => {
     retrieveCalls.push(id);
     return subscription("canceled");
@@ -115,6 +133,7 @@ test("stale subscription event syncs Stripe's current canceled state", async () 
 test("Stripe retrieval failure leaves entitlement state untouched", async () => {
   const writes: Array<{ table: string; action: string; value: any }> = [];
   installDatabase(writes);
+  installSubscriptionLock();
   stripe.subscriptions.retrieve = (async () => {
     throw new Error("synthetic Stripe outage");
   }) as typeof stripe.subscriptions.retrieve;
@@ -127,4 +146,71 @@ test("Stripe retrieval failure leaves entitlement state untouched", async () => 
     /synthetic Stripe outage/,
   );
   assert.deepEqual(writes, []);
+});
+
+test("distinct subscription events serialize retrieval and state writes", async () => {
+  const writes: Array<{ table: string; action: string; value: any }> = [];
+  installDatabase(writes);
+  installSubscriptionLock();
+
+  let currentStatus: "active" | "canceled" = "active";
+  let releaseFirstRetrieve!: () => void;
+  let markFirstRetrieveStarted!: () => void;
+  const firstRetrieveStarted = new Promise<void>((resolve) => {
+    markFirstRetrieveStarted = resolve;
+  });
+  const firstRetrieveGate = new Promise<void>((resolve) => {
+    releaseFirstRetrieve = resolve;
+  });
+  let retrieveCount = 0;
+  stripe.subscriptions.retrieve = (async (id: string) => {
+    retrieveCount += 1;
+    if (retrieveCount === 1) {
+      markFirstRetrieveStarted();
+      await firstRetrieveGate;
+      return subscription("active");
+    }
+    return subscription(currentStatus);
+  }) as typeof stripe.subscriptions.retrieve;
+
+  const olderUpdate = processStripeEvent({
+    id: "evt-old",
+    type: "customer.subscription.updated",
+    data: { object: subscription("active") },
+  } as any);
+  await firstRetrieveStarted;
+
+  currentStatus = "canceled";
+  await assert.rejects(
+    processStripeEvent({
+      id: "evt-cancel",
+      type: "customer.subscription.deleted",
+      data: { object: subscription("canceled") },
+    } as any),
+    (error: any) => error.statusCode === 503,
+  );
+
+  releaseFirstRetrieve();
+  await olderUpdate;
+  await processStripeEvent({
+    id: "evt-cancel",
+    type: "customer.subscription.deleted",
+    data: { object: subscription("canceled") },
+  } as any);
+
+  const subscriptionWrites = writes.filter(
+    (write) => write.table === "subscriptions",
+  );
+  const entitlementWrites = writes.filter(
+    (write) => write.table === "user_entitlements",
+  );
+  assert.deepEqual(
+    subscriptionWrites.map((write) => write.value.status),
+    ["active", "canceled"],
+  );
+  assert.deepEqual(
+    entitlementWrites.map((write) => write.value.plan),
+    ["pro", "free"],
+  );
+  assert.equal(retrieveCount, 2);
 });

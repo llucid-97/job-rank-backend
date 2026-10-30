@@ -78,7 +78,7 @@ function subscriptionPeriod(subscription: Stripe.Subscription) {
   };
 }
 
-export async function synchronizeSubscription(subscription: Stripe.Subscription) {
+async function synchronizeSubscription(subscription: Stripe.Subscription) {
   const customerId = objectId(subscription.customer);
   const item = subscription.items.data[0];
   const priceId = item?.price.id;
@@ -147,6 +147,44 @@ export async function synchronizeSubscription(subscription: Stripe.Subscription)
   if (entitlementError) throw entitlementError;
 }
 
+async function synchronizeCurrentSubscription(subscriptionId: string) {
+  const claimToken = randomUUID();
+  const { data, error } = await supabaseAdmin.rpc(
+    "claim_stripe_subscription_sync",
+    {
+      p_subscription_id: subscriptionId,
+      p_claim_token: claimToken,
+    },
+  );
+  if (error) throw error;
+  if (data !== "claimed") {
+    throw new AppError(
+      503,
+      "STRIPE_WEBHOOK_IN_PROGRESS",
+      "The Stripe subscription is already being synchronized.",
+    );
+  }
+
+  try {
+    const currentSubscription = await getStripe().subscriptions.retrieve(
+      subscriptionId,
+    );
+    await synchronizeSubscription(currentSubscription);
+  } finally {
+    const { data: released, error: releaseError } = await supabaseAdmin.rpc(
+      "release_stripe_subscription_sync",
+      {
+        p_subscription_id: subscriptionId,
+        p_claim_token: claimToken,
+      },
+    );
+    if (releaseError) throw releaseError;
+    if (released !== true) {
+      throw new Error("Stripe subscription synchronization lease was lost.");
+    }
+  }
+}
+
 async function synchronizeInvoice(invoice: Stripe.Invoice) {
   const customerId = objectId(invoice.customer);
   if (!customerId) throw new Error(`Stripe invoice ${invoice.id} has no customer.`);
@@ -192,10 +230,7 @@ async function synchronizeInvoice(invoice: Stripe.Invoice) {
   if (error) throw error;
 
   if (invoice.status === "paid" && stripeSubscriptionId) {
-    const currentSubscription = await getStripe().subscriptions.retrieve(
-      stripeSubscriptionId,
-    );
-    await synchronizeSubscription(currentSubscription);
+    await synchronizeCurrentSubscription(stripeSubscriptionId);
   }
 }
 
@@ -210,10 +245,7 @@ export async function processStripeEvent(event: Stripe.Event) {
     case "customer.subscription.deleted": {
       // Stripe does not guarantee delivery order; sync its current resource, not this event snapshot.
       const eventSubscription = event.data.object as Stripe.Subscription;
-      const currentSubscription = await getStripe().subscriptions.retrieve(
-        eventSubscription.id,
-      );
-      await synchronizeSubscription(currentSubscription);
+      await synchronizeCurrentSubscription(eventSubscription.id);
       break;
     }
     case "invoice.paid":
