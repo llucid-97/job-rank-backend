@@ -17,45 +17,45 @@ function Invoke-VercelSandboxCli {
 
 Push-Location $repositoryRoot
 try {
-    Invoke-VercelSandboxCli @(
+    Invoke-VercelSandboxCli -Arguments @(
         "sandbox", "create", "--project", $project, "--name", $sandboxName,
         "--vcpus", "1", "--timeout", "10m", "--network-policy", "allow-all", "--non-persistent"
     )
     $sandboxCreated = $true
 
-    Invoke-VercelSandboxCli @(
+    Invoke-VercelSandboxCli -Arguments @(
         "sandbox", "exec", "--project", $project, "--timeout", "5m", $sandboxName, "--",
         "npm", "install", "--prefix", "/vercel/sandbox/pdf-worker", "--no-save", "--package-lock=false",
         "pdf-parse@2.4.5", "pdfjs-dist@5.4.296", "@napi-rs/canvas@0.1.80"
     )
 
-    Invoke-VercelSandboxCli @(
+    Invoke-VercelSandboxCli -Arguments @(
         "sandbox", "exec", "--project", $project, "--timeout", "1m", $sandboxName, "--",
         "mkdir", "-p", "/vercel/sandbox/pdf-worker/scripts"
     )
 
-    Invoke-VercelSandboxCli @(
+    Invoke-VercelSandboxCli -Arguments @(
         "sandbox", "copy", "--project", $project,
         "scripts/pdf-sandbox-extract.mjs",
         "${sandboxName}:/vercel/sandbox/pdf-worker/extract.mjs"
     )
 
-    Invoke-VercelSandboxCli @(
+    Invoke-VercelSandboxCli -Arguments @(
         "sandbox", "copy", "--project", $project,
         "scripts/patch-pdfjs-resource-limits.mjs",
         "${sandboxName}:/vercel/sandbox/pdf-worker/scripts/patch-pdfjs-resource-limits.mjs"
     )
-    Invoke-VercelSandboxCli @(
+    Invoke-VercelSandboxCli -Arguments @(
         "sandbox", "copy", "--project", $project,
         "scripts/validate-pdfjs-resource-patch.mjs",
         "${sandboxName}:/vercel/sandbox/pdf-worker/scripts/validate-pdfjs-resource-patch.mjs"
     )
 
-    Invoke-VercelSandboxCli @(
+    Invoke-VercelSandboxCli -Arguments @(
         "sandbox", "exec", "--project", $project, "--timeout", "2m", $sandboxName, "--",
         "node", "/vercel/sandbox/pdf-worker/scripts/patch-pdfjs-resource-limits.mjs"
     )
-    Invoke-VercelSandboxCli @(
+    Invoke-VercelSandboxCli -Arguments @(
         "sandbox", "exec", "--project", $project, "--timeout", "2m", $sandboxName, "--",
         "node", "/vercel/sandbox/pdf-worker/scripts/patch-pdfjs-resource-limits.mjs"
     )
@@ -84,3 +84,4 @@ finally {
     }
     Pop-Location
 }
+
