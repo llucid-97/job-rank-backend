@@ -60,7 +60,7 @@ try {
         "node", "/vercel/sandbox/pdf-worker/scripts/patch-pdfjs-resource-limits.mjs"
     )
 
-    $snapshotOutput = & vercel sandbox snapshot --project $project --expiration 30d --stop $sandboxName 2>&1
+    $snapshotOutput = & vercel sandbox snapshot --project $project --expiration 0 --stop $sandboxName 2>&1
     $snapshotExitCode = $LASTEXITCODE
     foreach ($line in $snapshotOutput) { Write-Host $line }
     if ($snapshotExitCode -ne 0) {

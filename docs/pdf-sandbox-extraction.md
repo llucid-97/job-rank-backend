@@ -30,7 +30,7 @@ Set-Location C:\Users\ihexx\projects\job-rank-backend\.worktrees\pdf-sandbox-ext
 
 The script creates a short-lived, non-persistent seed sandbox with outbound
 access only for installing pinned packages, copies in and patches the worker
-and parser, takes a 30-day snapshot, and removes the seed sandbox. It prints a
+and parser, takes a snapshot without an expiry, and removes the seed sandbox. It prints a
 line in this form;
 the value after the colon is the snapshot ID:
 
@@ -40,8 +40,9 @@ Created clean PDF parser snapshot: snap_...
 
 Set `PDF_SANDBOX_SNAPSHOT_ID` to that value
 in the Vercel project environment before routing PDF extraction through this
-service. The script sets a 30-day snapshot expiry; rerun it after expiry or
-when upgrading the pinned parser packages. It uses the Vercel Sandbox Hobby
+service. The snapshot has no scheduled expiry, so production PDF extraction
+does not stop after 30 days. Rebuild and replace it when upgrading the pinned
+parser packages or their security patch. It uses the Vercel Sandbox Hobby
 included usage when available; Vercel pauses new sandbox creation after Hobby
 quotas are exhausted.
 
