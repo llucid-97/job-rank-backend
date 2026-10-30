@@ -24,6 +24,11 @@ test("both PDF upload paths fail closed through Sandbox when no parser snapshot 
   const uploadId = "11111111-1111-4111-8111-111111111111";
   const pdf = Buffer.from("%PDF-1.7\nsynthetic fixture");
   let destinationUploads = 0;
+  (supabaseAdmin as any).rpc = (name: string) => {
+    if (name === "claim_candidate_document_upload_finalization") return Promise.resolve({ data: "claimed", error: null });
+    if (name === "release_candidate_document_upload_finalization") return Promise.resolve({ data: true, error: null });
+    throw new Error(`Unexpected RPC ${name}`);
+  };
   (supabaseAdmin as any).from = (table: string) => {
     if (table === "candidate_documents") {
       return {

@@ -111,17 +111,6 @@ export async function finalizeCandidateDocumentUpload(
     return response.status(400).json({ error: { code: "INVALID_DOCUMENT_TYPE", message: "Document type must be cv or about_you." } });
   }
 
-  const { data: intent, error: intentError } = await supabaseAdmin
-    .from("candidate_document_upload_intents")
-    .select("id, purge_after")
-    .eq("id", uploadId)
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (intentError) throw intentError;
-  if (!intent || new Date(intent.purge_after).getTime() <= Date.now()) {
-    return response.status(404).json({ error: { code: "UPLOAD_NOT_FOUND", message: "Upload expired. Please select the file again." } });
-  }
-
   const documentColumns = "id, user_id, document_type, filename, storage_path, extracted_text, content_hash, revision, is_active, created_at, updated_at";
   const displayFilename = safeFilename(originalFilename);
   const { data: alreadyFinalized, error: existingError } = await supabaseAdmin
@@ -135,19 +124,54 @@ export async function finalizeCandidateDocumentUpload(
     return response.status(201).json({ data: alreadyFinalized });
   }
 
-  const stagingPath = `${userId}/${uploadId}/source`;
   const originalExtension = typeof originalFilename === "string"
     ? originalFilename.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase() : "";
   const sourceMime = originalExtension === "pdf" ? "application/pdf"
     : originalExtension === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     : ["md", "txt"].includes(originalExtension ?? "") ? "text/plain" : "";
-  let finalPath: string | undefined;
+  if (!sourceMime) return response.status(400).json({ error: { code: "UNSUPPORTED_DOCUMENT_TYPE", message: "Choose a PDF, DOCX, TXT or MD file." } });
+
+  const stagingPath = `${userId}/${uploadId}/source`;
+  const finalPath = `${userId}/${uploadId}/document.md`;
+  const claimToken = randomUUID();
   let documentId: string | undefined;
+  let finalizationClaimed = false;
+  let finalizationCompleted = false;
+  let publicationAttempted = false;
   let expected: { documentType: string; filename: string; storagePath: string; extractedText: string; contentHash: string } | undefined;
   let databaseRejected = false;
 
   try {
-    if (!sourceMime) return response.status(400).json({ error: { code: "UNSUPPORTED_DOCUMENT_TYPE", message: "Choose a PDF, DOCX, TXT or MD file." } });
+    const { data: claimStatus, error: claimError } = await supabaseAdmin.rpc(
+      "claim_candidate_document_upload_finalization",
+      { p_id: uploadId, p_user_id: userId, p_claim_token: claimToken, p_final_storage_path: finalPath },
+    );
+    if (claimError) throw claimError;
+    if (claimStatus === "busy" || claimStatus === "cleanup_in_progress") {
+      return response.status(409).json({ error: { code: "UPLOAD_FINALIZATION_IN_PROGRESS", message: "This upload is still being finalized. Retry after a few minutes." } });
+    }
+    if (claimStatus === "expired" || claimStatus === "not_found") {
+      return response.status(404).json({ error: { code: "UPLOAD_NOT_FOUND", message: "Upload expired. Please select the file again." } });
+    }
+    if (claimStatus === "conflict") {
+      return response.status(409).json({ error: { code: "UPLOAD_ALREADY_FINALIZED", message: "This upload was finalized with different details. Please select the file again." } });
+    }
+    if (claimStatus === "completed") {
+      const { data: completedDocument, error: completedLookupError } = await supabaseAdmin
+        .from("candidate_documents").select(documentColumns)
+        .eq("id", uploadId).eq("user_id", userId).maybeSingle();
+      if (completedLookupError) throw completedLookupError;
+      if (completedDocument
+          && completedDocument.document_type === documentType
+          && completedDocument.filename === displayFilename) {
+        return response.status(201).json({ data: completedDocument });
+      }
+      return response.status(409).json({ error: { code: "UPLOAD_ALREADY_FINALIZED", message: "This upload was finalized with different details. Please select the file again." } });
+    }
+    if (claimStatus !== "claimed") throw new Error("Unexpected document finalization claim status.");
+    finalizationClaimed = true;
+    documentId = uploadId;
+
     const { data: blob, error: downloadError } = await supabaseAdmin.storage.from(stagingBucketName).download(stagingPath);
     if (downloadError || !blob) return response.status(422).json({ error: { code: "UPLOAD_INCOMPLETE", message: "The file upload is incomplete. Please try again." } });
     if (blob.size <= 0 || blob.size > maxStagedDocumentBytes) {
@@ -165,11 +189,6 @@ export async function finalizeCandidateDocumentUpload(
     }
     // Reusing the upload UUID makes a successful finalization safe to retry
     // after an HTTP response is lost.
-    documentId = uploadId;
-    finalPath = `${userId}/${documentId}/document.md`;
-    const { error: intentUpdateError } = await supabaseAdmin.from("candidate_document_upload_intents")
-      .update({ final_storage_path: finalPath }).eq("id", uploadId).eq("user_id", userId);
-    if (intentUpdateError) throw intentUpdateError;
     const contentHash = createHash("sha256").update(markdown, "utf8").digest("hex");
     expected = { documentType, filename: displayFilename, storagePath: finalPath, extractedText: markdown, contentHash };
     const markdownBytes = Buffer.from(markdown, "utf8");
@@ -186,16 +205,22 @@ export async function finalizeCandidateDocumentUpload(
       }
     }
 
-    const { data: document, error: databaseError } = await supabaseAdmin.rpc("replace_candidate_document", {
+    // Once this request crosses the atomic publication RPC boundary, a lost
+    // response cannot tell us whether the transaction committed. Keep the
+    // lease unless Postgres returns a definitive transaction rejection.
+    publicationAttempted = true;
+    const { data: document, error: databaseError } = await supabaseAdmin.rpc("complete_candidate_document_upload_finalization", {
       p_id: documentId, p_user_id: userId, p_document_type: documentType,
       p_filename: displayFilename, p_storage_path: finalPath,
       p_extracted_text: markdown, p_content_hash: contentHash,
+      p_claim_token: claimToken,
     }).single();
     if (databaseError) {
       databaseRejected = /^(22|23)[A-Z0-9]{3}$/.test(databaseError.code) || ["40001", "40P01", "42501", "42883", "P0001"].includes(databaseError.code);
       throw databaseError;
     }
     if (!document) throw new Error("Document replacement returned no record.");
+    finalizationCompleted = true;
     return response.status(201).json({ data: document });
   } catch (error) {
     if (documentId) {
@@ -226,6 +251,12 @@ export async function finalizeCandidateDocumentUpload(
       errorCode: typeof error === "object" && error !== null && "code" in error ? error.code : "UNKNOWN",
     });
     return response.status(500).json({ error: { code: "DOCUMENT_UPLOAD_FAILED", message: "Document upload failed." } });
+  } finally {
+    if (finalizationClaimed && !finalizationCompleted && (!publicationAttempted || databaseRejected)) {
+      await Promise.resolve(supabaseAdmin.rpc("release_candidate_document_upload_finalization", {
+        p_id: uploadId, p_user_id: userId, p_claim_token: claimToken,
+      })).catch(() => undefined);
+    }
   }
 }
 
@@ -239,14 +270,18 @@ export async function cleanupCandidateDocumentUploads(request: Request, response
   let examined = 0;
   let removed = 0;
   while (Date.now() < cleanupDeadline) {
-    const { data: intents, error } = await supabaseAdmin.from("candidate_document_upload_intents")
-      .select("id, user_id, final_storage_path").lt("purge_after", new Date().toISOString())
-      .order("purge_after", { ascending: true }).limit(cleanupBatchSize);
+    const cleanupClaimToken = randomUUID();
+    const { data: intents, error } = await supabaseAdmin.rpc(
+      "claim_candidate_document_uploads_for_cleanup",
+      { p_claim_token: cleanupClaimToken, p_limit: cleanupBatchSize },
+    );
     if (error) throw error;
-    const batch = intents ?? [];
+    const batch = (intents ?? []) as Array<{ id: string; user_id: string; final_storage_path: string | null }>;
     if (batch.length === 0) break;
     const first = batch[0]!;
     examined += batch.length;
+    const ids = batch.map(intent => intent.id);
+    let cleanupStage = "removing objects";
     try {
       const sourcePaths = batch.map(intent => `${intent.user_id}/${intent.id}/source`);
       const finalPaths = batch.flatMap(intent => intent.final_storage_path ? [intent.final_storage_path] : []);
@@ -259,33 +294,26 @@ export async function cleanupCandidateDocumentUploads(request: Request, response
       }
       const orphanFinalPaths = finalPaths.filter(path => !referencedFinalPaths.has(path));
       const { error: stagingStorageError } = await supabaseAdmin.storage.from(stagingBucketName).remove(sourcePaths);
-      if (stagingStorageError) {
-        console.error("Candidate staging cleanup failed:", {
-          uploadId: first.id, count: batch.length, stage: "removing objects", errorCode: "STORAGE_ERROR",
-        });
-        return response.status(503).json({ error: { code: "STAGING_CLEANUP_FAILED", message: "Staging cleanup failed; retry the job." }, data: { examined, removed } });
-      }
+      if (stagingStorageError) throw stagingStorageError;
       if (orphanFinalPaths.length > 0) {
+        cleanupStage = "removing orphan documents";
         const { error: finalStorageError } = await supabaseAdmin.storage.from(bucketName).remove(orphanFinalPaths);
-        if (finalStorageError) {
-          console.error("Candidate staging cleanup failed:", {
-            uploadId: first.id, count: batch.length, stage: "removing orphan documents", errorCode: "STORAGE_ERROR",
-          });
-          return response.status(503).json({ error: { code: "STAGING_CLEANUP_FAILED", message: "Staging cleanup failed; retry the job." }, data: { examined, removed } });
-        }
+        if (finalStorageError) throw finalStorageError;
       }
-      const { error: deleteError } = await supabaseAdmin.from("candidate_document_upload_intents")
-        .delete().in("id", batch.map(intent => intent.id));
-      if (deleteError) {
-        console.error("Candidate staging cleanup failed:", {
-          uploadId: first.id, count: batch.length, stage: "removing intents", errorCode: deleteError.code ?? "UNKNOWN",
-        });
-        return response.status(503).json({ error: { code: "STAGING_CLEANUP_FAILED", message: "Staging cleanup failed; retry the job." }, data: { examined, removed } });
-      }
-      removed += batch.length;
+      cleanupStage = "removing intents";
+      const { data: deletedCount, error: deleteError } = await supabaseAdmin.rpc(
+        "delete_candidate_document_uploads_after_cleanup",
+        { p_claim_token: cleanupClaimToken, p_ids: ids },
+      );
+      if (deleteError) throw deleteError;
+      if (deletedCount !== batch.length) throw new Error("Cleanup claim changed before intent deletion.");
+      removed += deletedCount;
     } catch (cleanupError) {
+      await Promise.resolve(supabaseAdmin.rpc("release_candidate_document_upload_cleanup", {
+        p_claim_token: cleanupClaimToken, p_ids: ids,
+      })).catch(() => undefined);
       console.error("Candidate staging cleanup failed:", {
-        uploadId: first.id, count: batch.length, stage: "removing objects",
+        uploadId: first.id, count: batch.length, stage: cleanupStage,
         errorCode: typeof cleanupError === "object" && cleanupError !== null && "code" in cleanupError
           ? cleanupError.code : "UNKNOWN",
       });

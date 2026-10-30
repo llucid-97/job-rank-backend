@@ -65,6 +65,16 @@ DOCX/TXT in the existing in-process extractors. The PDF path fails closed when
 `PDF_SANDBOX_SNAPSHOT_ID` is absent; it does not fall back to local PDF.js and
 returns a service-unavailable response until the snapshot is configured.
 
+Finalization and expiration cleanup claim each upload intent through
+service-role-only SQL functions. The claims use row locks and five-minute
+leases, longer than the 120-second API and 90-second cleanup budgets. The
+final publication RPC commits the document row and finalized marker in one
+transaction. Cleanup claims only expired intents with no active finalizer,
+then deletes the intent only when its cleanup token still matches. If the
+final publication response is ambiguous, the finalizer keeps its lease until
+expiry so cleanup cannot remove an object while its database commit is still
+uncertain. Crashed claims become reclaimable when their leases expire.
+
 The current direct-upload finalizer still materializes the staged 15 MiB file
 as a Buffer before calling the extractor. Sandbox isolation bounds parser
 memory, but not that API-side upload buffer. If the upload limit grows, fetch
