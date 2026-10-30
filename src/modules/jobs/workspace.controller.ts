@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
+import { ownerJob } from "./owner-job.js";
 import { rankingVersion } from "../rankings/ranking.configuration.js";
 import { AppError } from "../../middleware/error-handling.js";
 import { supabaseAdmin } from "../../config/supabase.js";
@@ -122,7 +123,7 @@ export async function getWorkspace(request: Request, response: Response) {
     yield '{"data":[';
     for (const [index, row] of rows.entries()) {
       if (index) yield ",";
-      yield JSON.stringify({ ...row, ranking_results: ratings.get(row.job_id) ?? [] });
+      yield JSON.stringify({ ...row, jobs: ownerJob(row.jobs, row.workspace_data), ranking_results: ratings.get(row.job_id) ?? [] });
     }
     yield "]}";
   }

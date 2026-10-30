@@ -1,3 +1,4 @@
+import { ownerJob } from "../jobs/owner-job.js";
 import { consumeQuota } from "../provider-proxy/provider-quota.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { AppError } from "../../middleware/error-handling.js";
@@ -31,7 +32,7 @@ export async function generateFollowUpAnswers(input: {
   // Confirm that the job belongs to this user.
   const { data: userJob, error: userJobError } = await supabaseAdmin
     .from("user_jobs")
-    .select("job_id")
+    .select("job_id,workspace_data")
     .eq("user_id", input.userId)
     .eq("job_id", input.jobId)
     .maybeSingle();
@@ -53,6 +54,7 @@ export async function generateFollowUpAnswers(input: {
     .single();
 
   if (jobError) throw jobError;
+  const ownedJob = ownerJob(job, userJob.workspace_data);
 
   // Load active CV.
   const { data: cv, error: cvError } = await supabaseAdmin
@@ -143,10 +145,10 @@ export async function generateFollowUpAnswers(input: {
 
   const prompt = buildFollowUpPrompt({
     questions: input.questions,
-    jobTitle: job.title,
-    companyName: job.company_name,
-    location: job.location,
-    jobDescription: job.description,
+    jobTitle: ownedJob.title,
+    companyName: ownedJob.company_name,
+    location: ownedJob.location,
+    jobDescription: ownedJob.description,
     cvContent: cv.extracted_text,
     skillsProfile: profile.skills_profile,
     skillsSchema,

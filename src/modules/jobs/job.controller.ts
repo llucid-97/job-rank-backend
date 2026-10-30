@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { consumeQuota } from "../provider-proxy/provider-quota.js";
 import { jobSearchSchema } from "./job-search.schema.js";
 import { searchJobsDb } from "./jobsdb.service.js";
 import { saveSearchResults } from "./job.repository.js";
@@ -18,6 +19,7 @@ export async function searchJobs(request: Request, response: Response) {
     });
   }
 
+  await consumeQuota(request.auth!.userId, "jobsdb", 1);
   const providerJobs = await searchJobsDb(parsed.data);
   console.log("JobsDB provider results:", {
     count: providerJobs.length,

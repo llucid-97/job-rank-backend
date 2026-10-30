@@ -1,4 +1,5 @@
 import mammoth from "mammoth";
+import { checkDocxSize } from "./docx-limits.js";
 
 export async function extractDocumentText(
   buffer: Buffer,
@@ -12,6 +13,7 @@ export async function extractDocumentText(
     mimeType ===
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
+    checkDocxSize(buffer);
     const result = await mammoth.extractRawText({ buffer });
     return result.value.trim();
   }
