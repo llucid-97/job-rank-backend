@@ -5,13 +5,17 @@ function. The API keeps PDF uploads and persistence in their existing flows;
 DOCX and text extraction remain local. The isolated worker uses a one-vCPU
 sandbox (2 GiB RAM), denies outbound network access, has a 45-second session
 timeout, accepts at most 15 MiB of input, and returns at most 4 MiB of text.
-The per-request sandbox is non-persistent and deleted after extraction.
+The per-request sandbox is non-persistent and deleted after extraction. The
+seed bootstrap applies and validates the repository's PDF.js resource patch
+inside the snapshot before it can be used for candidate documents.
 
 ## Create the parser snapshot
 
 Use a Vercel project/account that owns the JobRank API project. The seed
 sandbox installs only pinned public parser packages and this repository's
-extractor script. It must never receive a candidate PDF or production secret.
+extractor and PDF.js resource-patch scripts. It must never receive a candidate
+PDF or production secret. The bootstrap applies the patch, then runs it a
+second time to validate the already patched worker and parser before snapshot.
 The seed uses outbound network access only to download those packages; normal
 PDF sandboxes use `deny-all`.
 
@@ -25,8 +29,9 @@ Set-Location C:\Users\ihexx\projects\job-rank-backend\.worktrees\pdf-sandbox-ext
 ```
 
 The script creates a short-lived, non-persistent seed sandbox with outbound
-access only for installing pinned packages, copies in the extractor, takes a
-30-day snapshot, and removes the seed sandbox. It prints a line in this form;
+access only for installing pinned packages, copies in and patches the worker
+and parser, takes a 30-day snapshot, and removes the seed sandbox. It prints a
+line in this form;
 the value after the colon is the snapshot ID:
 
 ```text
@@ -42,8 +47,15 @@ quotas are exhausted.
 
 The CLI uses its already-authenticated Vercel session for the bootstrap
 commands. The sandbox receives no CLI credentials or application secrets.
-Production extraction uses the Vercel project OIDC authentication available
-to the Sandbox SDK.
+Vercel documents that OIDC authentication is automatic in production on
+Vercel; the Sandbox SDK can use the deployment-provided token without a stored
+access token. This has not been exercised against a live deployment in this
+change.
+
+Worker exit code 1 reports an unparseable PDF (422), exit code 2 reports an
+invalid PDF input (422), and exit code 3 reports a parser/output resource limit
+(413). Sandbox OOM and timeout terminations also map to 413. DOCX/TXT behavior
+is unchanged.
 
 ## Integration point
 

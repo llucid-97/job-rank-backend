@@ -30,9 +30,34 @@ try {
     )
 
     Invoke-VercelSandboxCli @(
+        "sandbox", "exec", "--project", $project, "--timeout", "1m", $sandboxName, "--",
+        "mkdir", "-p", "/vercel/sandbox/pdf-worker/scripts"
+    )
+
+    Invoke-VercelSandboxCli @(
         "sandbox", "copy", "--project", $project,
         "scripts/pdf-sandbox-extract.mjs",
         "${sandboxName}:/vercel/sandbox/pdf-worker/extract.mjs"
+    )
+
+    Invoke-VercelSandboxCli @(
+        "sandbox", "copy", "--project", $project,
+        "scripts/patch-pdfjs-resource-limits.mjs",
+        "${sandboxName}:/vercel/sandbox/pdf-worker/scripts/patch-pdfjs-resource-limits.mjs"
+    )
+    Invoke-VercelSandboxCli @(
+        "sandbox", "copy", "--project", $project,
+        "scripts/validate-pdfjs-resource-patch.mjs",
+        "${sandboxName}:/vercel/sandbox/pdf-worker/scripts/validate-pdfjs-resource-patch.mjs"
+    )
+
+    Invoke-VercelSandboxCli @(
+        "sandbox", "exec", "--project", $project, "--timeout", "2m", $sandboxName, "--",
+        "node", "/vercel/sandbox/pdf-worker/scripts/patch-pdfjs-resource-limits.mjs"
+    )
+    Invoke-VercelSandboxCli @(
+        "sandbox", "exec", "--project", $project, "--timeout", "2m", $sandboxName, "--",
+        "node", "/vercel/sandbox/pdf-worker/scripts/patch-pdfjs-resource-limits.mjs"
     )
 
     $snapshotOutput = & vercel sandbox snapshot --project $project --expiration 30d --stop $sandboxName 2>&1

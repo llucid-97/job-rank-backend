@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { PdfResourceLimitError } from "../src/modules/candidate/pdf-resource-limit.js";
+import { PdfExtractionError } from "../src/modules/candidate/pdf-extraction-error.js";
 import {
   extractPdfTextInSandbox,
   PdfSandboxConfigurationError,
@@ -62,16 +63,40 @@ test("PDF extraction creates an isolated throwaway sandbox and returns bounded t
   assert.equal(calls.deleted, true);
 });
 
-test("PDF sandbox command failures map to resource rejection and still delete the sandbox", async () => {
-  const { calls, sandbox } = fakeSandbox(Buffer.alloc(0), 137);
-  await assert.rejects(
-    extractPdfTextInSandbox(input, {
-      snapshotId: "snap_parser_only",
-      createSandbox: async () => sandbox as never,
-    }),
-    PdfResourceLimitError,
-  );
-  assert.equal(calls.deleted, true);
+for (const [exitCode, ErrorType] of [
+  [1, PdfExtractionError],
+  [2, PdfExtractionError],
+  [3, PdfResourceLimitError],
+  [124, PdfResourceLimitError],
+  [137, PdfResourceLimitError],
+  [143, PdfResourceLimitError],
+] as const) {
+  test(`PDF sandbox worker exit ${exitCode} maps to ${ErrorType.name} and deletes the sandbox`, async () => {
+    const { calls, sandbox } = fakeSandbox(Buffer.alloc(0), exitCode);
+    await assert.rejects(
+      extractPdfTextInSandbox(input, {
+        snapshotId: "snap_parser_only",
+        createSandbox: async () => sandbox as never,
+      }),
+      ErrorType,
+    );
+    assert.equal(calls.deleted, true);
+  });
+}
+
+test("PDF sandbox timeout and OOM errors map to a resource rejection", async () => {
+  for (const message of ["Sandbox command timed out", "process killed: out of memory"]) {
+    const { calls, sandbox } = fakeSandbox(Buffer.alloc(0));
+    sandbox.runCommand = async () => { throw new Error(message); };
+    await assert.rejects(
+      extractPdfTextInSandbox(input, {
+        snapshotId: "snap_parser_only",
+        createSandbox: async () => sandbox as never,
+      }),
+      PdfResourceLimitError,
+    );
+    assert.equal(calls.deleted, true);
+  }
 });
 
 test("oversized sandbox output is rejected while streamed and still deleted", async () => {

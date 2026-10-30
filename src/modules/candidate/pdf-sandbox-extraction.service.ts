@@ -1,6 +1,7 @@
 import type { Sandbox } from "@vercel/sandbox";
 import { env } from "../../config/env.js";
 import { PdfResourceLimitError } from "./pdf-resource-limit.js";
+import { PdfExtractionError } from "./pdf-extraction-error.js";
 
 const sandboxTimeoutMs = 45_000;
 const maxInputBytes = 15 * 1024 * 1024;
@@ -47,10 +48,22 @@ export async function extractPdfTextInSandbox(
     });
     await sandbox.writeFiles([{ path: inputPath, content: buffer }]);
 
-    const command = await sandbox.runCommand({ cmd: "node", args: [extractorPath] });
-    if (command.exitCode !== 0) {
+    let command: Awaited<ReturnType<SandboxHandle["runCommand"]>>;
+    try {
+      command = await sandbox.runCommand({ cmd: "node", args: [extractorPath] });
+    } catch (error) {
+      if (isSandboxResourceTermination(error)) {
+        throw new PdfResourceLimitError("PDF extraction exceeded the sandbox time or memory limit.");
+      }
+      throw error;
+    }
+    if (command.exitCode === 3 || isResourceExitCode(command.exitCode)) {
       throw new PdfResourceLimitError("The PDF could not be safely extracted within the sandbox limits.");
     }
+    if (command.exitCode === 2) {
+      throw new PdfExtractionError("The uploaded file is not a valid, supported PDF.");
+    }
+    if (command.exitCode !== 0) throw new PdfExtractionError("The PDF could not be parsed.");
 
     const output = await sandbox.readFile({ path: outputPath });
     if (!output) throw new Error("PDF sandbox returned no extracted text.");
@@ -69,4 +82,13 @@ export async function extractPdfTextInSandbox(
   } finally {
     if (sandbox) await sandbox.delete();
   }
+}
+
+function isResourceExitCode(exitCode: number | null): boolean {
+  return exitCode === 124 || exitCode === 137 || exitCode === 143;
+}
+
+function isSandboxResourceTermination(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:timed?\s*out|timeout|deadline|out of memory|oom|memory limit|resource limit)/i.test(message);
 }

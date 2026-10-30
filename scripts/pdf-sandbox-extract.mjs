@@ -26,10 +26,16 @@ try {
       await writeFile(outputPath, text, "utf8");
     }
   }
-} catch {
+} catch (error) {
   // Never return parser diagnostics or document content through command logs.
-  process.stderr.write("PDF_EXTRACTION_FAILED\n");
-  process.exitCode = 1;
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("JOBRANK_PDF_RESOURCE_LIMIT")) {
+    process.stderr.write("PDF_RESOURCE_LIMIT\n");
+    process.exitCode = 3;
+  } else {
+    process.stderr.write("PDF_EXTRACTION_FAILED\n");
+    process.exitCode = 1;
+  }
 } finally {
   if (parser) await parser.destroy().catch(() => undefined);
 }

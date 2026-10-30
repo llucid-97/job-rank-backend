@@ -5,6 +5,7 @@ import { supabaseAdmin } from "../../config/supabase.js";
 import { extractDocumentText } from "./document_text.service.js";
 import { DocxResourceLimitError, UnsafeDocumentError } from "./docx-limits.js";
 import { PdfResourceLimitError } from "./pdf-resource-limit.js";
+import { PdfExtractionError } from "./pdf-extraction-error.js";
 
 const bucketName = "candidate-documents";
 const stagingBucketName = "candidate-document-staging";
@@ -382,6 +383,9 @@ export async function uploadCandidateDocument(
   } catch (error) {
     if (error instanceof UnsafeDocumentError || error instanceof PdfResourceLimitError) {
       return response.status(413).json({ error: { code: "UNSAFE_DOCUMENT", message: error.message } });
+    }
+    if (error instanceof PdfExtractionError) {
+      return response.status(422).json({ error: { code: "INVALID_DOCUMENT", message: error.message } });
     }
     // Clean up only after confirmed rollback; preserve files when the commit outcome is uncertain.
     let storageAction = "preserved; confirm upload/database outcome before cleanup";
