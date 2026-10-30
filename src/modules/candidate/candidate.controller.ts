@@ -105,14 +105,19 @@ export async function finalizeCandidateDocumentUpload(
   }
 
   const documentColumns = "id, user_id, document_type, filename, storage_path, extracted_text, content_hash, revision, is_active, created_at, updated_at";
+  const displayFilename = safeFilename(originalFilename);
   const { data: alreadyFinalized, error: existingError } = await supabaseAdmin
     .from("candidate_documents").select(documentColumns)
     .eq("id", uploadId).eq("user_id", userId).maybeSingle();
   if (existingError) throw existingError;
-  if (alreadyFinalized) return response.status(201).json({ data: alreadyFinalized });
+  if (alreadyFinalized) {
+    if (alreadyFinalized.document_type !== documentType || alreadyFinalized.filename !== displayFilename) {
+      return response.status(409).json({ error: { code: "UPLOAD_ALREADY_FINALIZED", message: "This upload was finalized with different details. Please select the file again." } });
+    }
+    return response.status(201).json({ data: alreadyFinalized });
+  }
 
   const stagingPath = `${userId}/${uploadId}/source`;
-  const displayFilename = safeFilename(originalFilename);
   const originalExtension = typeof originalFilename === "string"
     ? originalFilename.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase() : "";
   const sourceMime = originalExtension === "pdf" ? "application/pdf"
@@ -233,13 +238,21 @@ export async function cleanupCandidateDocumentUploads(request: Request, response
         referencedFinalPaths = new Set((referencedDocuments ?? []).map(document => document.storage_path));
       }
       const orphanFinalPaths = finalPaths.filter(path => !referencedFinalPaths.has(path));
-      const paths = [...sourcePaths, ...orphanFinalPaths];
-      const { error: storageError } = await supabaseAdmin.storage.from(stagingBucketName).remove(paths);
-      if (storageError) {
+      const { error: stagingStorageError } = await supabaseAdmin.storage.from(stagingBucketName).remove(sourcePaths);
+      if (stagingStorageError) {
         console.error("Candidate staging cleanup failed:", {
           uploadId: first.id, count: batch.length, stage: "removing objects", errorCode: "STORAGE_ERROR",
         });
         return response.status(503).json({ error: { code: "STAGING_CLEANUP_FAILED", message: "Staging cleanup failed; retry the job." }, data: { examined, removed } });
+      }
+      if (orphanFinalPaths.length > 0) {
+        const { error: finalStorageError } = await supabaseAdmin.storage.from(bucketName).remove(orphanFinalPaths);
+        if (finalStorageError) {
+          console.error("Candidate staging cleanup failed:", {
+            uploadId: first.id, count: batch.length, stage: "removing orphan documents", errorCode: "STORAGE_ERROR",
+          });
+          return response.status(503).json({ error: { code: "STAGING_CLEANUP_FAILED", message: "Staging cleanup failed; retry the job." }, data: { examined, removed } });
+        }
       }
       const { error: deleteError } = await supabaseAdmin.from("candidate_document_upload_intents")
         .delete().in("id", batch.map(intent => intent.id));

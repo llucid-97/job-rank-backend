@@ -27,9 +27,10 @@ test("direct upload intent is owner-bound and finalization stores normalized Mar
   let finalContentType = "";
   let rpcArgs: any;
   let allowIntent = true;
+  let finalizedRow: any = null;
   (supabaseAdmin as any).from = (table: string) => {
     if (table === "candidate_documents") return {
-      select: () => ({ eq: function () { return this; }, maybeSingle: async () => ({ data: null, error: null }) }),
+      select: () => ({ eq: function () { return this; }, maybeSingle: async () => ({ data: finalizedRow, error: null }) }),
     };
     assert.equal(table, "candidate_document_upload_intents");
     return {
@@ -106,7 +107,15 @@ test("direct upload intent is owner-bound and finalization stores normalized Mar
   assert.equal(rpcArgs.p_content_hash.length, 64);
   assert.equal(rpcArgs.p_id, uploadId);
 
-  let cleanupPaths: string[] = [];
+  finalizedRow = { ...finalized.body.data, document_type: "cv", filename: "resume.md" };
+  const conflictingRetry = await run(finalizeCandidateDocumentUpload, {
+    auth: { userId: "owner-a" },
+    body: { uploadId, documentType: "about_you", filename: "resume.md" },
+  });
+  assert.equal(conflictingRetry.status, 409);
+  assert.equal(conflictingRetry.body.error.code, "UPLOAD_ALREADY_FINALIZED");
+
+  const cleanupPathsByBucket = new Map<string, string[]>();
   let cleanupQueries = 0;
   let cleanupDeletes = 0;
   const referencedFinalPath = "owner-a/referenced-document/document.md";
@@ -141,19 +150,27 @@ test("direct upload intent is owner-bound and finalization stores normalized Mar
       } }),
     };
   };
-  (supabaseAdmin as any).storage.from = () => ({
-    remove: async (paths: string[]) => { cleanupPaths.push(...paths); return { error: null }; },
+  (supabaseAdmin as any).storage.from = (bucket: string) => ({
+    remove: async (paths: string[]) => {
+      const bucketPaths = cleanupPathsByBucket.get(bucket) ?? [];
+      bucketPaths.push(...paths);
+      cleanupPathsByBucket.set(bucket, bucketPaths);
+      return { error: null };
+    },
   });
   const unauthenticatedCleanup = await run(cleanupCandidateDocumentUploads, { headers: {} });
   assert.equal(unauthenticatedCleanup.status, 401);
   const cleanup = await run(cleanupCandidateDocumentUploads, { headers: { authorization: "Bearer synthetic-cron-secret" } });
   assert.equal(cleanup.status, 200);
-  assert.equal(cleanupPaths[0], `owner-a/${uploadId}/source`);
   assert.equal(cleanup.body.data.examined, 1002);
   assert.equal(cleanup.body.data.removed, 1002);
-  assert.equal(cleanupPaths.length, 1003);
-  assert.ok(cleanupPaths.includes(`owner-a/${uploadId}/document.md`));
-  assert.equal(cleanupPaths.includes(referencedFinalPath), false);
+  const stagingPaths = cleanupPathsByBucket.get("candidate-document-staging") ?? [];
+  const finalPaths = cleanupPathsByBucket.get("candidate-documents") ?? [];
+  assert.equal(stagingPaths.length, 1002);
+  assert.ok(stagingPaths.includes(`owner-a/${uploadId}/source`));
+  assert.equal(stagingPaths.includes(`owner-a/${uploadId}/document.md`), false);
+  assert.deepEqual(finalPaths, [`owner-a/${uploadId}/document.md`]);
+  assert.equal(finalPaths.includes(referencedFinalPath), false);
   assert.equal(cleanupQueries, 12);
   assert.equal(cleanupDeletes, 11);
 });
