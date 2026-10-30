@@ -9,6 +9,7 @@
     "type-check": "tsc --noEmit",
     "build": "tsc",
     "start": "node dist/server.js",
+    "postinstall": "node scripts/patch-pdfjs-resource-limits.mjs",
     "test:database": "node --test --test-concurrency=1 tests/candidate-document.database.mjs tests/job-workspace.database.mjs"
   },
   "keywords": [
@@ -30,7 +31,8 @@
     "helmet": "^8.3.0",
     "mammoth": "^1.12.3",
     "multer": "^2.5.0",
-    "pdf-parse": "^2.4.5",
+    "pdf-parse": "2.4.5",
+    "pdfjs-dist": "5.4.296",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
     "stripe": "^23.0.0",
