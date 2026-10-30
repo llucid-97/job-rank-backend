@@ -4,6 +4,9 @@ import { consumeQuota } from "./provider-quota.js";
 import { authenticate } from "../../middleware/authenticate.js";
 import { requireActiveAccount } from "../../middleware/require-active-account.js";
 import { AppError } from "../../middleware/error-handling.js";
+import { boundedText } from "../jobs/search-state.schema.js";
+import { constraintModel, constraintOutputTokens, jevModel, jobConstraintMessages, searchConstraintMessages } from "./constraint-prompts.js";
+import { z } from "zod";
 
 export const providerRouter = Router();
 providerRouter.use(["/jev", "/llm", "/feed"], authenticate, requireActiveAccount);
@@ -64,7 +67,7 @@ providerRouter.post("/jev/rank", async (request, response) => {
       upstream = await fetch("https://api.typesafe.ai/v1/systemone", {
         method: "POST", redirect: "error", signal: deadline,
         headers: { Authorization: `Bearer ${env.TYPESAFE_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "jev-latest", state: body.state, questions: body.questions }),
+        body: JSON.stringify({ model: jevModel, state: body.state, questions: body.questions }),
       });
       if (![429, 529].includes(upstream.status) || attempt === 2) break;
       const retryAfter = upstream.headers.get("retry-after");
@@ -89,19 +92,47 @@ providerRouter.post("/jev/rank", async (request, response) => {
   }
 });
 
+// Structured inputs keep the server's extraction instructions separate from user data.
+const searchInput = z.object({
+  preferences: boundedText(2000, 16384),
+  mustHaves: boundedText(2000, 16384),
+}).strict().refine(value => value.preferences.trim() || value.mustHaves.trim());
+const jobInput = z.object({
+  posting: z.string().max(200000).refine(value => value.trim().length > 0 &&
+    !value.includes("\0") && Buffer.byteLength(value, "utf8") <= 524288),
+}).strict();
+
+/** Validate the selected input contract before consuming quota or calling the provider. */
 providerRouter.post("/llm/generate", async (request, response) => {
   const body: unknown = request.body;
-  if (!object(body) || typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 200_000 ||
-      (body.maxTokens !== undefined && (!Number.isInteger(body.maxTokens) || (body.maxTokens as number) < 1 || (body.maxTokens as number) > 4096)) ||
+  if (!object(body) ||
+      (body.maxTokens !== undefined && (!Number.isInteger(body.maxTokens) || (body.maxTokens as number) < 1 || (body.maxTokens as number) > constraintOutputTokens)) ||
       (body.temperature !== undefined && (typeof body.temperature !== "number" || body.temperature < 0 || body.temperature > 1)) ||
-      (body.workflow !== undefined && body.workflow !== "constraints" && body.workflow !== "candidateProfile") ||
+      (body.workflow !== undefined && !["constraints", "candidateProfile", "searchConstraints", "jobConstraints"].includes(String(body.workflow))) ||
       (body.responseFormat !== undefined && body.responseFormat !== "json_object")) invalid();
+
+  let messages: { role: string; content: string }[];
+  if (body.workflow === "searchConstraints") {
+    if (body.prompt !== undefined) invalid();
+    const input = searchInput.parse(body.input);
+    messages = searchConstraintMessages(input.preferences, input.mustHaves);
+  } else if (body.workflow === "jobConstraints") {
+    if (body.prompt !== undefined) invalid();
+    messages = jobConstraintMessages(jobInput.parse(body.input).posting);
+  } else {
+    // Older clients retain a bounded fallback; longer job postings require the new workflow.
+    const limit = body.workflow === "candidateProfile" ? 200000 : 8192;
+    if (typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > limit) invalid();
+    messages = [{ role: "user", content: body.prompt }];
+  }
+
   await consumeQuota(request.auth!.userId, "llm", 1);
+  // Do not send user-chosen models or an unbounded response budget upstream.
   try {
     const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(60_000),
       headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: body.workflow === "candidateProfile" ? env.SKILLS_JSON_GENERATION_MODEL : "openai/gpt-5.6-luna", messages: [{ role: "user", content: body.prompt }], max_tokens: body.maxTokens ?? 4096, temperature: body.temperature ?? 0, ...(body.responseFormat === "json_object" ? { response_format: { type: "json_object" } } : {}) }),
+      body: JSON.stringify({ model: body.workflow === "candidateProfile" ? env.SKILLS_JSON_GENERATION_MODEL : constraintModel, messages, max_tokens: body.maxTokens ?? constraintOutputTokens, temperature: body.temperature ?? 0, ...(body.responseFormat === "json_object" ? { response_format: { type: "json_object" } } : {}) }),
     });
     if (!upstream.ok) throw new Error("Provider failed.");
     const result = JSON.parse((await readBounded(upstream, 2 * 1024 * 1024)).toString("utf8"));

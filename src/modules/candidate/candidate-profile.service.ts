@@ -147,6 +147,7 @@ export async function generateCandidateProfile(
       },
       body: JSON.stringify({
         model,
+        max_tokens: 4096,
         messages: [
           {
             role: "user",

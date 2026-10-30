@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { z } from "zod";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { AppError } from "../../middleware/error-handling.js";
+import { boundedText, searchStateSchema } from "../jobs/search-state.schema.js";
 
 const updateProfileSchema = z.object({
   displayName: z.string().trim().min(1).max(100),
@@ -9,7 +10,8 @@ const updateProfileSchema = z.object({
 
 const updatePreferencesSchema = z.object({
   sourceSettings: z.record(z.string(), z.unknown()).optional(),
-  searchQuery: z.string().max(200).optional(),
+  searchQuery: boundedText(200, 1600).optional(),
+  searchState: searchStateSchema.nullable().optional(),
   sourceSite: z.string().min(1).optional(),
   locationMode: z.string().min(1).optional(),
   countryScope: z.string().optional(),
@@ -147,6 +149,7 @@ export async function getPreferences(
   }
 }
 
+/** Save only supplied settings for the token owner; unrelated preferences remain intact. */
 export async function updatePreferences(
   request: Request,
   response: Response,
@@ -157,6 +160,9 @@ export async function updatePreferences(
     const userId = request.auth!.userId;
 
     const updates = {
+      ...(input.searchState !== undefined && {
+        search_state: input.searchState,
+      }),
       ...(input.sourceSettings !== undefined && {
         source_settings: input.sourceSettings,
       }),

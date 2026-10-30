@@ -1,10 +1,11 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { supabaseAdmin } from "../../config/supabase.js";
+import { boundedText } from "./search-state.schema.js";
 
 const historySchema = z.object({
   searches: z.array(z.object({
-    query: z.string().trim().min(1).max(200),
+    query: boundedText(200, 1600).transform(value => value.trim()).refine(value => value.length > 0),
     locationMode: z.enum(["remote", "on-site", "all"]),
     countryScope: z.string().max(100),
     hasSalary: z.boolean(),
