@@ -90,7 +90,7 @@ providerRouter.post("/jev/rank", async (request, response) => {
   }
 });
 
-providerRouter.post("/llm/generate", async (request, response) => {
+export async function generateLlm(request: Request, response: Response) {
   const body: unknown = request.body;
   if (!object(body) || typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 200_000 ||
       (body.maxTokens !== undefined && (!Number.isInteger(body.maxTokens) || (body.maxTokens as number) < 1 || (body.maxTokens as number) > 4096)) ||
@@ -112,7 +112,9 @@ providerRouter.post("/llm/generate", async (request, response) => {
   } catch {
     throw new AppError(502, "PROVIDER_FAILED", "Language model request failed.");
   }
-});
+}
+
+providerRouter.post("/llm/generate", generateLlm);
 
 export function allowedFeed(raw: string): boolean {
   let url: URL;
