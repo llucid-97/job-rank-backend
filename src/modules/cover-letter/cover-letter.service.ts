@@ -171,20 +171,24 @@ export async function generateCoverLetter(input: {
     );
   }
 
-  const { data: document, error: documentError } = await supabaseAdmin
-    .from("generated_documents")
-    .insert({
-      user_id: input.userId,
-      job_id: input.jobId,
-      candidate_profile_id: profile.id,
-      document_type: "cover_letter",
-      content,
-      model,
-      prompt_version: promptVersion,
-    })
-    .select()
-    .single();
+  // Lock and verify the source CV in the same transaction that publishes the
+  // letter. A plain read here would still race a replacement/deactivation.
+  const { data: document, error: documentError } = await supabaseAdmin.rpc(
+    "publish_cover_letter_for_active_cv",
+    {
+      p_user_id: input.userId,
+      p_cv_document_id: cv.id,
+      p_candidate_profile_id: profile.id,
+      p_job_id: input.jobId,
+      p_content: content,
+      p_model: model,
+      p_prompt_version: promptVersion,
+    },
+  ).single();
 
+  if (documentError?.code === "P0001") {
+    throw new AppError(409, "CANDIDATE_CONTEXT_CHANGED", "Your CV changed while the cover letter was being generated. Please try again.");
+  }
   if (documentError) throw documentError;
 
   const { error: usageError } = await supabaseAdmin
