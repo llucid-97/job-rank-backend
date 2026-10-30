@@ -1,0 +1,10 @@
+.env
+.env.*
+.codex-tests/
+tests/
+supabase/
+docs/
+.github/
+node_modules/
+dist/
+desktop.ini

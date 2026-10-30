@@ -1,5 +1,5 @@
 import type Stripe from "stripe";
-import { stripe } from "../../config/stripe.js";
+import { getStripe } from "../../config/stripe.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 
 const FREE_ENTITLEMENT = {
@@ -190,7 +190,7 @@ async function synchronizeInvoice(invoice: Stripe.Invoice) {
   if (error) throw error;
 
   if (invoice.status === "paid" && stripeSubscriptionId) {
-    const currentSubscription = await stripe.subscriptions.retrieve(
+    const currentSubscription = await getStripe().subscriptions.retrieve(
       stripeSubscriptionId,
     );
     await synchronizeSubscription(currentSubscription);

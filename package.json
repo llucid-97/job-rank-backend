@@ -20,6 +20,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@napi-rs/canvas": "0.1.80",
     "@supabase/server": "^1.5.2",
     "@supabase/supabase-js": "^2.114.0",
     "ajv": "^8.20.0",
@@ -43,5 +44,8 @@
     "pg": "8.23.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": "24.x"
   }
 }

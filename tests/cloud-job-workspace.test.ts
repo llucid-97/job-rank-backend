@@ -5,6 +5,7 @@ import { afterEach, test } from 'node:test';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import { Writable } from 'node:stream';
 
 Object.assign(process.env, {
   DOTENV_CONFIG_PATH: '/dev/null', NODE_ENV: 'test', PORT: '3000',
@@ -57,7 +58,16 @@ function jsonResponse(value: any, status = 200) { return new Response(JSON.strin
 function jevResponse(body: any, score = 3) { return { model: 'jev-synthetic-resolved', answers: Object.fromEntries(Object.keys(body.questions).map(key => [key, { type: 'score', score }])) }; }
 function request(body: any = {}, userId = 'owner-a', params: any = {}) { return { body, auth: { userId }, params } as any; }
 function response() {
-  return { statusCode: 200, body: undefined as any, status(code: number) { this.statusCode = code; return this; }, json(body: any) { this.body = body; return this; } } as any;
+  let bytes = '';
+  const output: any = new Writable({
+    write(chunk, _encoding, callback) { bytes += chunk.toString(); callback(); },
+    final(callback) { output.body = JSON.parse(bytes); callback(); },
+  });
+  output.statusCode = 200;
+  output.status = function (code: number) { this.statusCode = code; return this; };
+  output.json = function (body: any) { this.body = body; return this; };
+  output.type = function () { return this; };
+  return output;
 }
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 const originalRpc = supabaseAdmin.rpc.bind(supabaseAdmin);

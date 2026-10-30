@@ -1,3 +1,4 @@
+import { consumeQuota } from "../provider-proxy/provider-quota.js";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { supabaseAdmin } from "../../config/supabase.js";
@@ -133,6 +134,8 @@ export async function generateCandidateProfile(
   }
 
   await assertActiveCv(userId, document.id);
+
+  await consumeQuota(userId, "llm", 1);
 
   const openRouterResponse = await fetch(
     "https://openrouter.ai/api/v1/chat/completions",

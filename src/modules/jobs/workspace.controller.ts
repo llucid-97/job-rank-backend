@@ -1,4 +1,6 @@
 import type { Request, Response } from "express";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import { rankingVersion } from "../rankings/ranking.configuration.js";
 import { AppError } from "../../middleware/error-handling.js";
@@ -116,5 +118,14 @@ export async function getWorkspace(request: Request, response: Response) {
       ratings.set(row.job_id, values);
     }
   }
-  return response.json({ data: rows.map(row => ({ ...row, ranking_results: ratings.get(row.job_id) ?? [] })) });
+  function* workspaceJson() {
+    yield '{"data":[';
+    for (const [index, row] of rows.entries()) {
+      if (index) yield ",";
+      yield JSON.stringify({ ...row, ranking_results: ratings.get(row.job_id) ?? [] });
+    }
+    yield "]}";
+  }
+  response.type("application/json");
+  await pipeline(Readable.from(workspaceJson()), response);
 }
