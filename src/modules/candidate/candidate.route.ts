@@ -5,6 +5,9 @@ import {
   deactivateCandidateDocument,
   listCandidateDocuments,
   uploadCandidateDocument,
+  createCandidateDocumentUpload,
+  finalizeCandidateDocumentUpload,
+  cleanupCandidateDocumentUploads,
 } from "./candidate.controller.js";
 import { candidateDocumentUpload } from "./candidate_upload.middleware.js";
 import {
@@ -13,6 +16,22 @@ import {
 } from "./candidate_profile.controller.js";
 
 export const candidateRouter = Router();
+
+candidateRouter.post(
+  "/documents/uploads",
+  authenticate,
+  requireActiveAccount,
+  createCandidateDocumentUpload,
+);
+
+candidateRouter.post(
+  "/documents/uploads/finalize",
+  authenticate,
+  requireActiveAccount,
+  finalizeCandidateDocumentUpload,
+);
+
+candidateRouter.get("/documents/staging-cleanup", cleanupCandidateDocumentUploads);
 
 candidateRouter.post(
   "/documents",
