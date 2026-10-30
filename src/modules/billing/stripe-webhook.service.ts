@@ -1,6 +1,8 @@
 import type Stripe from "stripe";
+import { randomUUID } from "node:crypto";
 import { getStripe } from "../../config/stripe.js";
 import { supabaseAdmin } from "../../config/supabase.js";
+import { AppError } from "../../middleware/error-handling.js";
 
 const FREE_ENTITLEMENT = {
   plan: "free",
@@ -76,7 +78,7 @@ function subscriptionPeriod(subscription: Stripe.Subscription) {
   };
 }
 
-export async function synchronizeSubscription(subscription: Stripe.Subscription) {
+async function synchronizeSubscription(subscription: Stripe.Subscription) {
   const customerId = objectId(subscription.customer);
   const item = subscription.items.data[0];
   const priceId = item?.price.id;
@@ -145,6 +147,44 @@ export async function synchronizeSubscription(subscription: Stripe.Subscription)
   if (entitlementError) throw entitlementError;
 }
 
+async function synchronizeCurrentSubscription(subscriptionId: string) {
+  const claimToken = randomUUID();
+  const { data, error } = await supabaseAdmin.rpc(
+    "claim_stripe_subscription_sync",
+    {
+      p_subscription_id: subscriptionId,
+      p_claim_token: claimToken,
+    },
+  );
+  if (error) throw error;
+  if (data !== "claimed") {
+    throw new AppError(
+      503,
+      "STRIPE_WEBHOOK_IN_PROGRESS",
+      "The Stripe subscription is already being synchronized.",
+    );
+  }
+
+  try {
+    const currentSubscription = await getStripe().subscriptions.retrieve(
+      subscriptionId,
+    );
+    await synchronizeSubscription(currentSubscription);
+  } finally {
+    const { data: released, error: releaseError } = await supabaseAdmin.rpc(
+      "release_stripe_subscription_sync",
+      {
+        p_subscription_id: subscriptionId,
+        p_claim_token: claimToken,
+      },
+    );
+    if (releaseError) throw releaseError;
+    if (released !== true) {
+      throw new Error("Stripe subscription synchronization lease was lost.");
+    }
+  }
+}
+
 async function synchronizeInvoice(invoice: Stripe.Invoice) {
   const customerId = objectId(invoice.customer);
   if (!customerId) throw new Error(`Stripe invoice ${invoice.id} has no customer.`);
@@ -190,10 +230,7 @@ async function synchronizeInvoice(invoice: Stripe.Invoice) {
   if (error) throw error;
 
   if (invoice.status === "paid" && stripeSubscriptionId) {
-    const currentSubscription = await getStripe().subscriptions.retrieve(
-      stripeSubscriptionId,
-    );
-    await synchronizeSubscription(currentSubscription);
+    await synchronizeCurrentSubscription(stripeSubscriptionId);
   }
 }
 
@@ -205,9 +242,12 @@ export async function processStripeEvent(event: Stripe.Event) {
       break;
     case "customer.subscription.created":
     case "customer.subscription.updated":
-    case "customer.subscription.deleted":
-      await synchronizeSubscription(event.data.object);
+    case "customer.subscription.deleted": {
+      // Stripe does not guarantee delivery order; sync its current resource, not this event snapshot.
+      const eventSubscription = event.data.object as Stripe.Subscription;
+      await synchronizeCurrentSubscription(eventSubscription.id);
       break;
+    }
     case "invoice.paid":
     case "invoice.payment_failed":
       await synchronizeInvoice(event.data.object);
@@ -218,57 +258,58 @@ export async function processStripeEvent(event: Stripe.Event) {
 }
 
 export async function beginWebhookEvent(event: Stripe.Event) {
-  const { data: existing, error: lookupError } = await supabaseAdmin
-    .from("stripe_webhook_events")
-    .select("processing_status, processing_attempts")
-    .eq("stripe_event_id", event.id)
-    .maybeSingle();
-  if (lookupError) throw lookupError;
-  if (existing?.processing_status === "processed") return false;
-
-  if (existing) {
-    const { error } = await supabaseAdmin
-      .from("stripe_webhook_events")
-      .update({
-        processing_status: "processing",
-        processing_attempts: existing.processing_attempts + 1,
-        last_error: null,
-      })
-      .eq("stripe_event_id", event.id);
-    if (error) throw error;
-    return true;
-  }
-
-  const { error } = await supabaseAdmin.from("stripe_webhook_events").insert({
-    stripe_event_id: event.id,
-    event_type: event.type,
-    livemode: event.livemode,
-    stripe_api_version: event.api_version,
-    processing_status: "processing",
-    processing_attempts: 1,
-    payload: event,
-  });
-
-  if (error?.code === "23505") return false;
+  const claimToken = randomUUID();
+  const { data, error } = await supabaseAdmin.rpc(
+    "claim_stripe_webhook_event",
+    {
+      p_event_id: event.id,
+      p_event_type: event.type,
+      p_livemode: event.livemode,
+      p_api_version: event.api_version,
+      p_payload: event,
+      p_claim_token: claimToken,
+    },
+  );
   if (error) throw error;
-  return true;
+  if (data === "claimed") return claimToken;
+  if (data === "processed" || data === "ignored") return null;
+  if (data === "busy") {
+    throw new AppError(
+      503,
+      "STRIPE_WEBHOOK_IN_PROGRESS",
+      "The Stripe event is already being processed.",
+    );
+  }
+  throw new Error("Stripe webhook claim returned an invalid result.");
 }
 
 export async function finishWebhookEvent(
   eventId: string,
+  claimToken: string,
   errorMessage?: string,
 ) {
-  const { error } = await supabaseAdmin
+  const patch = errorMessage
+    ? {
+        processing_status: "failed",
+        processing_started_at: null,
+        processing_claim_token: null,
+        last_error: errorMessage,
+      }
+    : {
+        processing_status: "processed",
+        processed_at: new Date().toISOString(),
+        processing_started_at: null,
+        processing_claim_token: null,
+        last_error: null,
+      };
+  const { data, error } = await supabaseAdmin
     .from("stripe_webhook_events")
-    .update(
-      errorMessage
-        ? { processing_status: "failed", last_error: errorMessage }
-        : {
-            processing_status: "processed",
-            processed_at: new Date().toISOString(),
-            last_error: null,
-          },
-    )
-    .eq("stripe_event_id", eventId);
+    .update(patch)
+    .eq("stripe_event_id", eventId)
+    .eq("processing_claim_token", claimToken)
+    .select("stripe_event_id")
+    .maybeSingle();
+
   if (error) throw error;
+  if (!data) throw new Error("Stripe webhook processing lease was lost.");
 }

@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { env } from "../../config/env.js";
 import { getStripe } from "../../config/stripe.js";
+import { AppError } from "../../middleware/error-handling.js";
 import {
   beginWebhookEvent,
   finishWebhookEvent,
@@ -40,12 +41,12 @@ export async function handleStripeWebhook(
     });
   }
 
-  const shouldProcess = await beginWebhookEvent(event);
-  if (!shouldProcess) return response.status(200).json({ received: true });
+  const claimToken = await beginWebhookEvent(event);
+  if (!claimToken) return response.status(200).json({ received: true });
 
   try {
     await processStripeEvent(event);
-    await finishWebhookEvent(event.id);
+    await finishWebhookEvent(event.id, claimToken);
     return response.status(200).json({ received: true });
   } catch (error) {
     const message =
@@ -54,11 +55,18 @@ export async function handleStripeWebhook(
       { eventId: event.id, eventType: event.type },
       "Stripe webhook failed",
     );
-    await finishWebhookEvent(event.id, message.slice(0, 1000));
-    return response.status(500).json({
+    await finishWebhookEvent(event.id, claimToken, message.slice(0, 1000));
+    const statusCode = error instanceof AppError ? error.statusCode : 500;
+    return response.status(statusCode).json({
       error: {
-        code: "STRIPE_WEBHOOK_FAILED",
-        message: "Stripe webhook processing failed.",
+        code:
+          error instanceof AppError
+            ? error.code
+            : "STRIPE_WEBHOOK_FAILED",
+        message:
+          error instanceof AppError
+            ? error.message
+            : "Stripe webhook processing failed.",
       },
     });
   }
