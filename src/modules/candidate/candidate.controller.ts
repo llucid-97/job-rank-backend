@@ -12,6 +12,10 @@ const stagingBucketName = "candidate-document-staging";
 // protects the parser if project-level Storage settings are misconfigured.
 export const maxStagedDocumentBytes = 15 * 1024 * 1024;
 const maxNormalizedMarkdownBytes = 4 * 1024 * 1024;
+const cleanupBatchSize = 100;
+const cleanupTimeBudgetMs = 90_000;
+
+class FinalizationConflictError extends Error {}
 
 function normalizedMarkdown(value: string): string {
   return value
@@ -47,10 +51,16 @@ export async function createCandidateDocumentUpload(
   const stagingPath = `${userId}/${uploadId}/source`;
   const purgeAfter = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
 
-  const { error: intentError } = await supabaseAdmin
-    .from("candidate_document_upload_intents")
-    .insert({ id: uploadId, user_id: userId, purge_after: purgeAfter });
+  const { data: intentCreated, error: intentError } = await supabaseAdmin.rpc(
+    "create_candidate_document_upload_intent",
+    { p_id: uploadId, p_user_id: userId, p_purge_after: purgeAfter },
+  );
   if (intentError) throw intentError;
+  if (intentCreated !== true) {
+    return response.status(429).json({
+      error: { code: "UPLOAD_LIMIT_REACHED", message: "You have reached the limit of five unpurged uploads. Please try again after staging cleanup runs." },
+    });
+  }
 
   const { data, error } = await supabaseAdmin.storage
     .from(stagingBucketName)
@@ -94,8 +104,9 @@ export async function finalizeCandidateDocumentUpload(
     return response.status(404).json({ error: { code: "UPLOAD_NOT_FOUND", message: "Upload expired. Please select the file again." } });
   }
 
+  const documentColumns = "id, user_id, document_type, filename, storage_path, extracted_text, content_hash, revision, is_active, created_at, updated_at";
   const { data: alreadyFinalized, error: existingError } = await supabaseAdmin
-    .from("candidate_documents").select("id, document_type, filename, extracted_text, revision, is_active, created_at, updated_at")
+    .from("candidate_documents").select(documentColumns)
     .eq("id", uploadId).eq("user_id", userId).maybeSingle();
   if (existingError) throw existingError;
   if (alreadyFinalized) return response.status(201).json({ data: alreadyFinalized });
@@ -109,6 +120,7 @@ export async function finalizeCandidateDocumentUpload(
     : ["md", "txt"].includes(originalExtension ?? "") ? "text/plain" : "";
   let finalPath: string | undefined;
   let documentId: string | undefined;
+  let expected: { documentType: string; filename: string; storagePath: string; extractedText: string; contentHash: string } | undefined;
   let databaseRejected = false;
 
   try {
@@ -131,13 +143,25 @@ export async function finalizeCandidateDocumentUpload(
     // Reusing the upload UUID makes a successful finalization safe to retry
     // after an HTTP response is lost.
     documentId = uploadId;
-    const markdownFilename = displayFilename.replace(/\.[^.]*$/, "") || "candidate-document";
-    finalPath = `${userId}/${documentId}/${markdownFilename}.md`;
+    finalPath = `${userId}/${documentId}/document.md`;
+    const { error: intentUpdateError } = await supabaseAdmin.from("candidate_document_upload_intents")
+      .update({ final_storage_path: finalPath }).eq("id", uploadId).eq("user_id", userId);
+    if (intentUpdateError) throw intentUpdateError;
     const contentHash = createHash("sha256").update(markdown, "utf8").digest("hex");
+    expected = { documentType, filename: displayFilename, storagePath: finalPath, extractedText: markdown, contentHash };
+    const markdownBytes = Buffer.from(markdown, "utf8");
     const { error: storageError } = await supabaseAdmin.storage.from(bucketName).upload(
-      finalPath, Buffer.from(markdown, "utf8"), { contentType: "text/markdown", upsert: false },
+      finalPath, markdownBytes, { contentType: "text/markdown", upsert: false },
     );
-    if (storageError) throw storageError;
+    if (storageError) {
+      // A prior attempt may have uploaded this exact object before its database
+      // RPC failed ambiguously. Reuse only byte-identical content.
+      const { data: priorObject, error: priorObjectError } = await supabaseAdmin.storage.from(bucketName).download(finalPath);
+      if (priorObjectError || !priorObject) throw storageError;
+      if (!Buffer.from(await priorObject.arrayBuffer()).equals(markdownBytes)) {
+        throw new FinalizationConflictError("A different Markdown object already occupies this upload path.");
+      }
+    }
 
     const { data: document, error: databaseError } = await supabaseAdmin.rpc("replace_candidate_document", {
       p_id: documentId, p_user_id: userId, p_document_type: documentType,
@@ -151,7 +175,27 @@ export async function finalizeCandidateDocumentUpload(
     if (!document) throw new Error("Document replacement returned no record.");
     return response.status(201).json({ data: document });
   } catch (error) {
-    if (databaseRejected && finalPath) await supabaseAdmin.storage.from(bucketName).remove([finalPath]).catch(() => ({ error: true }));
+    if (documentId) {
+      const { data: currentDocument, error: lookupError } = await supabaseAdmin
+        .from("candidate_documents").select(documentColumns)
+        .eq("id", documentId).eq("user_id", userId).maybeSingle();
+      if (!lookupError && currentDocument) {
+        const matchesAttempt = expected !== undefined
+          && currentDocument.document_type === expected.documentType
+          && currentDocument.filename === expected.filename
+          && currentDocument.storage_path === expected.storagePath
+          && currentDocument.extracted_text === expected.extractedText
+          && currentDocument.content_hash === expected.contentHash;
+        if (matchesAttempt) return response.status(201).json({ data: currentDocument });
+        return response.status(409).json({ error: { code: "UPLOAD_ALREADY_FINALIZED", message: "This upload was finalized with different details. Please select the file again." } });
+      }
+    }
+    if (error instanceof FinalizationConflictError) {
+      return response.status(409).json({ error: { code: "UPLOAD_OBJECT_CONFLICT", message: "This upload could not be resumed safely. Please select the file again." } });
+    }
+    if (finalPath && !databaseRejected) {
+      return response.status(503).json({ error: { code: "DOCUMENT_UPLOAD_RETRYABLE", message: "The upload result is uncertain. Please retry finalization." } });
+    }
     console.error("Candidate document finalize failed:", {
       uploadId, documentId, stage: finalPath ? "saving document" : "extracting document",
       errorCode: typeof error === "object" && error !== null && "code" in error ? error.code : "UNKNOWN",
@@ -160,41 +204,50 @@ export async function finalizeCandidateDocumentUpload(
   }
 }
 
-/** Remove at most 1000 expired quarantine objects per cron run. */
+/** Remove expired quarantine objects until the function approaches its runtime budget. */
 export async function cleanupCandidateDocumentUploads(request: Request, response: Response) {
   const secret = env.CRON_SECRET;
   if (!secret || request.headers.authorization !== `Bearer ${secret}`) {
     return response.status(401).json({ error: { code: "UNAUTHORIZED", message: "Unauthorized." } });
   }
-  const { data: intents, error } = await supabaseAdmin.from("candidate_document_upload_intents")
-    .select("id, user_id").lt("purge_after", new Date().toISOString())
-    .order("purge_after", { ascending: true }).limit(1000);
-  if (error) throw error;
-  const expired = intents ?? [];
-  if (expired.length === 0) return response.status(200).json({ data: { examined: 0, removed: 0 } });
+  const cleanupDeadline = Date.now() + cleanupTimeBudgetMs;
+  let examined = 0;
   let removed = 0;
-  for (let start = 0; start < expired.length; start += 100) {
-    const batch = expired.slice(start, start + 100);
-    const first = batch[0];
-    if (!first) continue;
+  while (Date.now() < cleanupDeadline) {
+    const { data: intents, error } = await supabaseAdmin.from("candidate_document_upload_intents")
+      .select("id, user_id, final_storage_path").lt("purge_after", new Date().toISOString())
+      .order("purge_after", { ascending: true }).limit(cleanupBatchSize);
+    if (error) throw error;
+    const batch = intents ?? [];
+    if (batch.length === 0) break;
+    const first = batch[0]!;
+    examined += batch.length;
     try {
-      const paths = batch.map(intent => `${intent.user_id}/${intent.id}/source`);
+      const sourcePaths = batch.map(intent => `${intent.user_id}/${intent.id}/source`);
+      const finalPaths = batch.flatMap(intent => intent.final_storage_path ? [intent.final_storage_path] : []);
+      let referencedFinalPaths = new Set<string>();
+      if (finalPaths.length > 0) {
+        const { data: referencedDocuments, error: referenceError } = await supabaseAdmin
+          .from("candidate_documents").select("storage_path").in("storage_path", finalPaths);
+        if (referenceError) throw referenceError;
+        referencedFinalPaths = new Set((referencedDocuments ?? []).map(document => document.storage_path));
+      }
+      const orphanFinalPaths = finalPaths.filter(path => !referencedFinalPaths.has(path));
+      const paths = [...sourcePaths, ...orphanFinalPaths];
       const { error: storageError } = await supabaseAdmin.storage.from(stagingBucketName).remove(paths);
       if (storageError) {
         console.error("Candidate staging cleanup failed:", {
-          uploadId: first.id, count: batch.length, stage: "removing objects",
-          errorCode: "STORAGE_ERROR",
+          uploadId: first.id, count: batch.length, stage: "removing objects", errorCode: "STORAGE_ERROR",
         });
-        continue;
+        return response.status(503).json({ error: { code: "STAGING_CLEANUP_FAILED", message: "Staging cleanup failed; retry the job." }, data: { examined, removed } });
       }
       const { error: deleteError } = await supabaseAdmin.from("candidate_document_upload_intents")
         .delete().in("id", batch.map(intent => intent.id));
       if (deleteError) {
         console.error("Candidate staging cleanup failed:", {
-          uploadId: first.id, count: batch.length, stage: "removing intents",
-          errorCode: deleteError.code ?? "UNKNOWN",
+          uploadId: first.id, count: batch.length, stage: "removing intents", errorCode: deleteError.code ?? "UNKNOWN",
         });
-        continue;
+        return response.status(503).json({ error: { code: "STAGING_CLEANUP_FAILED", message: "Staging cleanup failed; retry the job." }, data: { examined, removed } });
       }
       removed += batch.length;
     } catch (cleanupError) {
@@ -203,9 +256,10 @@ export async function cleanupCandidateDocumentUploads(request: Request, response
         errorCode: typeof cleanupError === "object" && cleanupError !== null && "code" in cleanupError
           ? cleanupError.code : "UNKNOWN",
       });
+      return response.status(503).json({ error: { code: "STAGING_CLEANUP_FAILED", message: "Staging cleanup failed; retry the job." }, data: { examined, removed } });
     }
   }
-  return response.status(200).json({ data: { examined: expired.length, removed } });
+  return response.status(200).json({ data: { examined, removed, hasMore: Date.now() >= cleanupDeadline } });
 }
 
 export async function uploadCandidateDocument(

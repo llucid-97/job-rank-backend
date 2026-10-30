@@ -10,11 +10,18 @@ Markdown object in `candidate-documents` and publishes its text through
 `replace_candidate_document`.
 
 The source object remains in the private staging bucket until its signed token
-has expired. A Vercel Cron job calls the cleanup endpoint once daily and removes
-up to 1,000 expired objects per run in batches of 100. Set a random `CRON_SECRET` in the Vercel
-project settings; Vercel sends it as `Authorization: Bearer ...`. Cron jobs run
-on all Vercel plans, with a once-daily minimum on Hobby. Staging objects can
-therefore remain for up to roughly one day after their three-hour purge time.
+has expired. Each account can hold at most five unpurged upload intents,
+including successful uploads while their signed tokens remain valid. Expired
+intents continue to count until cleanup removes them, so cleanup delays
+backpressure new uploads instead of allowing an unbounded staging backlog. A Vercel Cron job
+calls the cleanup endpoint once daily and removes expired objects in batches of
+100 until it approaches the function runtime budget. It also removes an
+unpublished Markdown object left by a failed attempt after verifying that no
+candidate document references it. Set a random `CRON_SECRET`
+in the Vercel project settings; Vercel sends it as `Authorization: Bearer ...`.
+Cron jobs run on all Vercel plans, with a once-daily minimum on Hobby. Staging
+objects can therefore remain for up to roughly one day after their three-hour
+purge time under normal cleanup operation.
 
 ## Rollout
 
