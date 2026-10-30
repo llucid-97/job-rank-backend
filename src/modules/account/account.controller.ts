@@ -72,6 +72,8 @@ export async function getMe(
         accountStatus: entitlement.data.account_status,
         monthlyRequestLimit: entitlement.data.monthly_request_limit,
         monthlySpendLimitUsd: entitlement.data.ai_cost_limit_usd,
+        aiSpendLimitEnforced: false,
+        aiSpendLimitNotice: "Target only; not an enforced hard spending cap.",
         createdAt: profile.data.created_at,
       },
     });
