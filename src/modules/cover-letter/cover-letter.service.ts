@@ -1,3 +1,4 @@
+import { consumeQuota } from "../provider-proxy/provider-quota.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { AppError } from "../../middleware/error-handling.js";
 import { loadCandidateSchema } from "../candidate/candidate-profile.service.js";
@@ -104,6 +105,8 @@ export async function generateCoverLetter(input: {
 
   const { schemaText } = await loadCandidateSchema();
   const skillsSchema = JSON.parse(schemaText);
+
+  await consumeQuota(input.userId, "llm", 1);
 
   const providerResponse = await fetch(
     "https://openrouter.ai/api/v1/chat/completions",

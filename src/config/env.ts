@@ -31,11 +31,11 @@ const environmentSchema = z.object({
     .min(1)
     .default("openai/gpt-5.6-luna"),
 
-  STRIPE_WEBHOOK_SECRET: z.string().min(1),
-  STRIPE_SECRET_KEY: z.string().min(1),
-  STRIPE_CHECKOUT_CANCEL_URL: z.string().min(1),
-  STRIPE_CHECKOUT_SUCCESS_URL: z.string().min(1),
-  STRIPE_PORTAL_RETURN_URL: z.string().min(1),
+  STRIPE_WEBHOOK_SECRET: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
+  STRIPE_SECRET_KEY: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
+  STRIPE_CHECKOUT_CANCEL_URL: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
+  STRIPE_CHECKOUT_SUCCESS_URL: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
+  STRIPE_PORTAL_RETURN_URL: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
 });
 
 const result = environmentSchema.safeParse(process.env);

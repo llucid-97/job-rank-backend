@@ -1,4 +1,5 @@
 import multer from "multer";
+import { env } from "../../config/env.js";
 import { AppError } from "../../middleware/error-handling.js";
 
 const allowedTypes = [
@@ -10,7 +11,8 @@ const allowedTypes = [
 export const candidateDocumentUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024,
+    // Vercel and production use the hosted limit; local development keeps 10 MiB.
+    fileSize: (process.env.VERCEL === "1" || env.NODE_ENV === "production" ? 3 : 10) * 1024 * 1024,
   },
   /** Reject unsupported uploads before parsing or publishing candidate evidence. */
   fileFilter: (_request, file, callback) => {

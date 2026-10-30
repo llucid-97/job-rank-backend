@@ -1,6 +1,6 @@
 import type Stripe from "stripe";
 import { env } from "../../config/env.js";
-import { stripe } from "../../config/stripe.js";
+import { getStripe } from "../../config/stripe.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { AppError } from "../../middleware/error-handling.js";
 
@@ -50,7 +50,7 @@ async function getOrCreateCustomer(userId: string, email: string | null) {
   if (lookupError) throw lookupError;
   if (existing) return existing.stripe_customer_id as string;
 
-  const customer = await stripe.customers.create({
+  const customer = await getStripe().customers.create({
     ...(email ? { email } : {}),
     metadata: { user_id: userId },
   });
@@ -114,7 +114,7 @@ export async function createCheckoutSession(input: {
   }
 
   const customerId = await getOrCreateCustomer(input.userId, input.email);
-  const session = await stripe.checkout.sessions.create({
+  const session = await getStripe().checkout.sessions.create({
     mode: "subscription",
     customer: customerId,
     client_reference_id: input.userId,
@@ -178,7 +178,7 @@ export async function createCustomerPortalSession(userId: string) {
     );
   }
 
-  const session = await stripe.billingPortal.sessions.create({
+  const session = await getStripe().billingPortal.sessions.create({
     customer: data.stripe_customer_id,
     return_url: env.STRIPE_PORTAL_RETURN_URL ?? `${env.FRONTEND_URL}/#/account`,
   });

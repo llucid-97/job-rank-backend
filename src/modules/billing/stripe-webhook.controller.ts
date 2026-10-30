@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { env } from "../../config/env.js";
-import { stripe } from "../../config/stripe.js";
+import { getStripe } from "../../config/stripe.js";
 import {
   beginWebhookEvent,
   finishWebhookEvent,
@@ -11,6 +11,9 @@ export async function handleStripeWebhook(
   request: Request,
   response: Response,
 ) {
+  if (!env.STRIPE_SECRET_KEY || !env.STRIPE_WEBHOOK_SECRET) {
+    return response.status(503).json({ error: { code: "BILLING_UNAVAILABLE", message: "Billing is not configured." } });
+  }
   const signature = request.headers["stripe-signature"];
   if (typeof signature !== "string") {
     return response.status(400).json({
@@ -23,7 +26,7 @@ export async function handleStripeWebhook(
 
   let event;
   try {
-    event = stripe.webhooks.constructEvent(
+    event = getStripe().webhooks.constructEvent(
       request.body,
       signature,
       env.STRIPE_WEBHOOK_SECRET,

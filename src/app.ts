@@ -1,3 +1,4 @@
+import type {} from "./types/express.js";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -12,6 +13,7 @@ import { jobRouter } from "./modules/jobs/job.routes.js";
 import { rankingRouter } from "./modules/rankings/ranking.routes.js";
 import { handleStripeWebhook } from "./modules/billing/stripe-webhook.controller.js";
 import { billingRouter } from "./modules/billing/billing.route.js";
+import { providerRouter } from "./modules/provider-proxy/provider.routes.js";
 
 export const app = express();
 
@@ -39,7 +41,7 @@ app.use(
   }),
 );
 
-app.use("/v1/jobs/workspace", express.json({ limit: "10mb" }));
+app.use("/v1/jobs/workspace", express.json({ limit: "3mb" }));
 app.post(
   "/v1/billing/webhooks/stripe",
   express.raw({ type: "application/json" }),
@@ -63,12 +65,16 @@ app.get("/health", (_request, response) => {
   });
 });
 
+app.use("/v1", providerRouter);
 app.use("/v1/auth-test", authTestRouter);
-app.use("/v1", accountRouter);
 app.use("/v1/candidate", candidateRouter);
 app.use("/v1/jobs", jobRouter);
 app.use("/v1/ranking-runs", rankingRouter);
-app.use("/v1/billing", billingRouter);
+app.use("/v1/billing", (_request, response, next) => {
+  if (!env.STRIPE_SECRET_KEY) return response.status(503).json({ error: { code: "BILLING_UNAVAILABLE", message: "Billing is not configured." } });
+  next();
+}, billingRouter);
+app.use("/v1", accountRouter);
 app.use((request, response) => {
   response.status(404).json({
     error: {
@@ -79,3 +85,5 @@ app.use((request, response) => {
 });
 
 app.use(errorHandler);
+
+export default app;

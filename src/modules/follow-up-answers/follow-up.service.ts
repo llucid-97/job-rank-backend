@@ -1,3 +1,4 @@
+import { consumeQuota } from "../provider-proxy/provider-quota.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { AppError } from "../../middleware/error-handling.js";
 import {
@@ -155,6 +156,8 @@ export async function generateFollowUpAnswers(input: {
 
   // Ensure that the CV is still active before calling the provider.
   await assertActiveCv(input.userId, cv.id);
+
+  await consumeQuota(input.userId, "llm", 1);
 
   const providerResponse = await fetch(
     "https://openrouter.ai/api/v1/chat/completions",
