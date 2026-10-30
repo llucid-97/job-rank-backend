@@ -9,7 +9,6 @@
     "type-check": "tsc --noEmit",
     "build": "tsc",
     "start": "node dist/server.js",
-    "sandbox:pdf:snapshot": "node scripts/create-pdf-sandbox-snapshot.mjs",
     "postinstall": "node scripts/patch-pdfjs-resource-limits.mjs",
     "test:database": "node --test --test-concurrency=1 tests/candidate-document.database.mjs tests/job-workspace.database.mjs"
   },

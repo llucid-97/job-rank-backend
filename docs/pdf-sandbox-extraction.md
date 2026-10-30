@@ -15,17 +15,19 @@ extractor script. It must never receive a candidate PDF or production secret.
 The seed uses outbound network access only to download those packages; normal
 PDF sandboxes use `deny-all`.
 
-From PowerShell, run these commands from this checkout's repository root:
+The bootstrap script uses the Vercel CLI's existing authenticated session
+directly. It does not read or export CLI credentials, and it does not require
+`vercel link` or `vercel env pull`. From PowerShell, run:
 
 ```powershell
 Set-Location C:\Users\ihexx\projects\job-rank-backend\.worktrees\pdf-sandbox-extraction
-vercel link
-vercel env pull
-npm run sandbox:pdf:snapshot
+.\scripts\create-pdf-sandbox-snapshot.ps1
 ```
 
-The final command prints a line in this form; the value after the colon is the
-snapshot ID:
+The script creates a short-lived, non-persistent seed sandbox with outbound
+access only for installing pinned packages, copies in the extractor, takes a
+30-day snapshot, and removes the seed sandbox. It prints a line in this form;
+the value after the colon is the snapshot ID:
 
 ```text
 Created clean PDF parser snapshot: snap_...
@@ -38,10 +40,10 @@ when upgrading the pinned parser packages. It uses the Vercel Sandbox Hobby
 included usage when available; Vercel pauses new sandbox creation after Hobby
 quotas are exhausted.
 
-Local development uses the linked project's `VERCEL_OIDC_TOKEN` from
-`.env.local`. Production uses Vercel's project OIDC authentication when
-Secure Backend Access is enabled. Do not add a long-lived Vercel access token
-to the sandbox or pass application secrets into `Sandbox.create()`.
+The CLI uses its already-authenticated Vercel session for the bootstrap
+commands. The sandbox receives no CLI credentials or application secrets.
+Production extraction uses the Vercel project OIDC authentication available
+to the Sandbox SDK.
 
 ## Integration point
 
