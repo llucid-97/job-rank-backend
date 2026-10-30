@@ -1,6 +1,7 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { env } from "../../config/env.js";
 import { consumeQuota } from "./provider-quota.js";
+import { consumePublicFeedRequest } from "./public-feed-quota.js";
 import { authenticate } from "../../middleware/authenticate.js";
 import { requireActiveAccount } from "../../middleware/require-active-account.js";
 import { AppError } from "../../middleware/error-handling.js";
@@ -138,8 +139,18 @@ export function allowedFeed(raw: string): boolean {
     default: return false;
   }
 }
-providerRouter.get("/feed", async (request, response) => {
+export async function proxyPublicFeed(request: Request, response: Response) {
   if (Object.keys(request.query).length !== 1 || typeof request.query.url !== "string" || !allowedFeed(request.query.url)) invalid();
+  const retryAfter = await consumePublicFeedRequest(request.auth!.userId);
+  if (retryAfter > 0) {
+    response.set("Retry-After", String(retryAfter));
+    return response.status(429).json({
+      error: {
+        code: "FEED_RATE_LIMITED",
+        message: "Please try again shortly.",
+      },
+    });
+  }
   try {
     const upstream = await fetch(request.query.url, {
       redirect: "error", signal: AbortSignal.timeout(15_000),
@@ -151,4 +162,6 @@ providerRouter.get("/feed", async (request, response) => {
   } catch {
     throw new AppError(502, "FEED_UNAVAILABLE", "Job feed unavailable.");
   }
-});
+}
+
+providerRouter.get("/feed", proxyPublicFeed);
