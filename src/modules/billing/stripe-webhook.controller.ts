@@ -40,12 +40,12 @@ export async function handleStripeWebhook(
     });
   }
 
-  const shouldProcess = await beginWebhookEvent(event);
-  if (!shouldProcess) return response.status(200).json({ received: true });
+  const claimToken = await beginWebhookEvent(event);
+  if (!claimToken) return response.status(200).json({ received: true });
 
   try {
     await processStripeEvent(event);
-    await finishWebhookEvent(event.id);
+    await finishWebhookEvent(event.id, claimToken);
     return response.status(200).json({ received: true });
   } catch (error) {
     const message =
@@ -54,7 +54,7 @@ export async function handleStripeWebhook(
       { eventId: event.id, eventType: event.type },
       "Stripe webhook failed",
     );
-    await finishWebhookEvent(event.id, message.slice(0, 1000));
+    await finishWebhookEvent(event.id, claimToken, message.slice(0, 1000));
     return response.status(500).json({
       error: {
         code: "STRIPE_WEBHOOK_FAILED",
