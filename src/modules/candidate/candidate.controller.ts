@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { env } from "../../config/env.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { extractDocumentText } from "./document_text.service.js";
-import { UnsafeDocumentError } from "./docx-limits.js";
+import { DocxResourceLimitError, UnsafeDocumentError } from "./docx-limits.js";
 import { PdfResourceLimitError } from "./pdf-resource-limit.js";
 
 const bucketName = "candidate-documents";
@@ -16,6 +16,16 @@ const cleanupBatchSize = 100;
 const cleanupTimeBudgetMs = 90_000;
 
 class FinalizationConflictError extends Error {}
+
+export function mapFinalizationDocumentError(error: unknown): { status: number; code: string; message: string } | null {
+  if (error instanceof PdfResourceLimitError || error instanceof DocxResourceLimitError) {
+    return { status: 413, code: "UNSAFE_DOCUMENT", message: error.message };
+  }
+  if (error instanceof UnsafeDocumentError) {
+    return { status: 422, code: "INVALID_DOCUMENT", message: error.message };
+  }
+  return null;
+}
 
 function normalizedMarkdown(value: string): string {
   return value
@@ -195,6 +205,8 @@ export async function finalizeCandidateDocumentUpload(
         return response.status(409).json({ error: { code: "UPLOAD_ALREADY_FINALIZED", message: "This upload was finalized with different details. Please select the file again." } });
       }
     }
+    const documentError = mapFinalizationDocumentError(error);
+    if (documentError) return response.status(documentError.status).json({ error: { code: documentError.code, message: documentError.message } });
     if (error instanceof FinalizationConflictError) {
       return response.status(409).json({ error: { code: "UPLOAD_OBJECT_CONFLICT", message: "This upload could not be resumed safely. Please select the file again." } });
     }

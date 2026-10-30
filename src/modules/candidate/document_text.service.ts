@@ -1,5 +1,5 @@
 import mammoth from "mammoth";
-import { checkDocxSize } from "./docx-limits.js";
+import { checkDocxSize, UnsafeDocumentError } from "./docx-limits.js";
 import { PdfResourceLimitError } from "./pdf-resource-limit.js";
 
 const pdfExtractionTimeoutMs = 15_000;
@@ -17,8 +17,12 @@ export async function extractDocumentText(
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
     checkDocxSize(buffer);
-    const result = await mammoth.extractRawText({ buffer });
-    return result.value.trim();
+    try {
+      const result = await mammoth.extractRawText({ buffer });
+      return result.value.trim();
+    } catch {
+      throw new UnsafeDocumentError();
+    }
   }
 
   if (mimeType === "application/pdf") {

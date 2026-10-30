@@ -11,6 +11,14 @@ export class UnsafeDocumentError extends Error {
   }
 }
 
+/** A structurally valid DOCX whose expanded contents exceed parser budgets. */
+export class DocxResourceLimitError extends Error {
+  constructor() {
+    super("The DOCX file expands beyond the supported size.");
+    this.name = "DocxResourceLimitError";
+  }
+}
+
 export function checkDocxSize(buffer: Buffer): void {
   try {
     // Find the ZIP end record, including its optional comment.
@@ -44,19 +52,27 @@ export function checkDocxSize(buffer: Buffer): void {
       const next = position + 46 + nameSize + extraSize + commentSize;
       if (next > end || disk !== 0 || (flags & 1) !== 0 || (method !== 0 && method !== 8) ||
           compressed === 0xffffffff || declaredSize === 0xffffffff || local === 0xffffffff ||
-          declaredSize > maxEntryBytes || total + declaredSize > maxArchiveBytes ||
           local + 30 > directoryOffset || buffer.readUInt32LE(local) !== 0x04034b50) throw new UnsafeDocumentError();
+      if (declaredSize > maxEntryBytes || total + declaredSize > maxArchiveBytes) throw new DocxResourceLimitError();
       const start = local + 30 + buffer.readUInt16LE(local + 26) + buffer.readUInt16LE(local + 28);
       if (start + compressed > directoryOffset) throw new UnsafeDocumentError();
       const data = buffer.subarray(start, start + compressed);
       // Declared lengths alone are attacker-controlled. Inflate with a hard cap.
-      const expanded = method === 0 ? data : inflateRawSync(data, { maxOutputLength: Math.min(maxEntryBytes, maxArchiveBytes - total) });
-      if (expanded.length !== declaredSize || expanded.length > maxEntryBytes || total + expanded.length > maxArchiveBytes) throw new UnsafeDocumentError();
+      let expanded: Buffer;
+      try {
+        expanded = method === 0 ? data : inflateRawSync(data, { maxOutputLength: Math.min(maxEntryBytes, maxArchiveBytes - total) });
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ERR_BUFFER_TOO_LARGE") throw new DocxResourceLimitError();
+        throw new UnsafeDocumentError();
+      }
+      if (expanded.length > maxEntryBytes || total + expanded.length > maxArchiveBytes) throw new DocxResourceLimitError();
+      if (expanded.length !== declaredSize) throw new UnsafeDocumentError();
       total += expanded.length;
       position = next;
     }
     if (position !== end) throw new UnsafeDocumentError();
-  } catch {
+  } catch (error) {
+    if (error instanceof DocxResourceLimitError) throw error;
     throw new UnsafeDocumentError();
   }
 }
