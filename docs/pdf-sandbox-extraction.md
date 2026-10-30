@@ -40,9 +40,10 @@ Created clean PDF parser snapshot: snap_...
 
 Set `PDF_SANDBOX_SNAPSHOT_ID` to that value
 in the Vercel project environment before routing PDF extraction through this
-service. The snapshot has no scheduled expiry, so production PDF extraction
-does not stop after 30 days. Rebuild and replace it when upgrading the pinned
-parser packages or their security patch. It uses the Vercel Sandbox Hobby
+service. The snapshot does not expire automatically. Rebuild and replace it
+when upgrading the pinned parser packages or their security patch, then remove
+obsolete snapshots after the deployment uses the replacement so their storage
+does not accumulate. It uses the Vercel Sandbox Hobby
 included usage when available; Vercel pauses new sandbox creation after Hobby
 quotas are exhausted.
 
