@@ -24,6 +24,7 @@ type ProviderResult = {
   };
 };
 
+/** Generate bounded follow-up answers only for the active account and CV. */
 export async function generateFollowUpAnswers(input: {
   userId: string;
   jobId: string;
@@ -171,6 +172,7 @@ export async function generateFollowUpAnswers(input: {
       },
       body: JSON.stringify({
         model,
+        max_tokens: 4096,
         messages: [
           {
             role: "user",
