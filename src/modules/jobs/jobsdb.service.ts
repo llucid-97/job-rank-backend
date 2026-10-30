@@ -1,6 +1,8 @@
 import { AppError } from "../../middleware/error-handling.js";
 import type { JobSearchInput } from "./job-search.schema.js";
 
+const maxProviderResponseBytes = 4 * 1024 * 1024;
+
 function resolveTimeFrame(days: number) {
   if (days <= 1) return "24h";
   if (days <= 7) return "7d";
@@ -46,6 +48,28 @@ function extractProviderJobs(body: unknown): Record<string, unknown>[] {
 
   throw new Error("JobsDB returned an unexpected response structure.");
 }
+
+async function readProviderResponse(response: Response): Promise<Buffer> {
+  if (!response.body) throw new Error("JobsDB returned an empty response.");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > maxProviderResponseBytes) {
+        throw new AppError(502, "JOB_PROVIDER_RESPONSE_TOO_LARGE", "The job provider returned too much data.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return Buffer.concat(chunks);
+}
+
 export async function searchJobsDb(input: JobSearchInput) {
   const host = input.sourceSite === "linkedin" ? process.env.JOBSDB_API_HOST_LINKEDIN : process.env.JOBSDB_API_HOST_ATS || process.env.JOBSDB_API_HOST;
   const endpoint = input.sourceSite === "linkedin" ? process.env.LINKEDIN_API_ENDPOINT : process.env.JOBSDB_API_ENDPOINT || "/active-ats";
@@ -84,7 +108,7 @@ export async function searchJobsDb(input: JobSearchInput) {
       "x-rapidapi-host": host,
     },
   });
-  const responseText = await response.text();
+  const responseText = (await readProviderResponse(response)).toString("utf8");
   console.log("JobsDB response:", {
     status: response.status,
     contentType: response.headers.get("content-type"),
@@ -104,7 +128,7 @@ export async function searchJobsDb(input: JobSearchInput) {
     throw new Error("JobsDB returned an invalid JSON response.");
   }
 
-  return extractProviderJobs(body);
+  return extractProviderJobs(body).slice(0, input.limit);
 
   // if (Array.isArray(body)) return body;
   // if (Array.isArray(body.jobs)) return body.jobs;
