@@ -1,6 +1,10 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  validatePatchedParser,
+  validatePatchedWorker,
+} from "./validate-pdfjs-resource-patch.mjs";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 
@@ -37,12 +41,7 @@ const workerPath = path.join(
 );
 let worker = await readFile(workerPath, "utf8");
 if (worker.includes("JOBRANK_PDF_RESOURCE_LIMIT")) {
-  if (
-    !worker.includes("jobRankAppendPdfTextItem") ||
-    !worker.includes("maxOutputLength: remaining")
-  ) {
-    throw new Error("The installed PDF.js worker has a partial or unknown JobRank patch.");
-  }
+  validatePatchedWorker(worker);
 } else {
   worker = replaceExactly(
     worker,
@@ -213,13 +212,7 @@ const parsePath = path.join(
 );
 let parser = await readFile(parsePath, "utf8");
 if (parser.includes("jobRankLoadingTask")) {
-  if (
-    !parser.includes("else if (this.jobRankLoadingTask)") ||
-    !parser.includes("this.jobRankLoadingTask = loadingTask") ||
-    !parser.includes("if (this.jobRankLoadingTask === loadingTask)")
-  ) {
-    throw new Error("The installed pdf-parse bundle has a partial or unknown JobRank patch.");
-  }
+  validatePatchedParser(parser);
 } else {
   const destroyBefore = `    async destroy() {
         if (this.doc) {
