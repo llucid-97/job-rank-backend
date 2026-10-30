@@ -159,7 +159,10 @@ function database(initial: Record<string, any[]> = {}) {
     };
     return builder;
   }) as any;
-  supabaseAdmin.rpc = (async (name: string, args: any) => { rpcCalls.push({ name, args: structuredClone(args) }); return { data: name === 'consume_provider_quota' ? true : [], error: null }; }) as any;
+  supabaseAdmin.rpc = (async (name: string, args: any) => {
+    rpcCalls.push({ name, args: structuredClone(args) });
+    return { data: ['consume_provider_quota', 'acquire_jobsdb_search_lease', 'release_jobsdb_search_lease'].includes(name) ? true : [], error: null };
+  }) as any;
   return { rows, calls, rpcCalls, hooks };
 }
 function rankingDatabase(jobIds = ['job-1']) {
