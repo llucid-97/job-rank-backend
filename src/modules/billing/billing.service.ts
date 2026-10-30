@@ -11,6 +11,15 @@ const ACTIVE_SUBSCRIPTION_STATUSES = [
   "unpaid",
 ];
 
+const AI_SPEND_LIMIT_DISCLOSURE = {
+  aiSpendLimitEnforced: false,
+  aiSpendLimitNotice: "Target only; not an enforced hard spending cap.",
+};
+
+function discloseAiSpendLimit<T extends Record<string, unknown>>(plan: T): T {
+  return { ...plan, ...AI_SPEND_LIMIT_DISCLOSURE };
+}
+
 export async function listBillingPlans() {
   const { data, error } = await supabaseAdmin
     .from("billing_plans")
@@ -21,7 +30,7 @@ export async function listBillingPlans() {
     .order("unit_amount", { ascending: true });
 
   if (error) throw error;
-  return data ?? [];
+  return (data ?? []).map(discloseAiSpendLimit);
 }
 
 async function getPlan(planCode: string) {
@@ -215,7 +224,17 @@ export async function getCurrentSubscription(userId: string) {
     .maybeSingle();
 
   if (error) throw error;
-  return data;
+  if (!data) return data;
+
+  const plans = data.billing_plans;
+  return {
+    ...data,
+    billing_plans: Array.isArray(plans)
+      ? plans.map(discloseAiSpendLimit)
+      : plans
+        ? discloseAiSpendLimit(plans)
+        : plans,
+  };
 }
 
 export function stripeId(value: string | Stripe.Customer | Stripe.Subscription | null) {
