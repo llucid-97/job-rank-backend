@@ -9,7 +9,7 @@ Object.assign(process.env, {
 });
 
 const originalFetch = globalThis.fetch;
-const { searchJobsDb } = await import('../src/modules/jobs/jobsdb.service.js');
+const { extractProviderJobs, searchJobsDb } = await import('../src/modules/jobs/jobsdb.service.js');
 const input = { query: 'test', sourceSite: 'jobsdb', persistResults: true, isRemote: false, countryCodes: [], hasSalary: false, page: 0, daysSincePosted: 7, limit: 2 } as const;
 
 afterEach(() => { globalThis.fetch = originalFetch; });
@@ -47,6 +47,62 @@ test('JobsDB preserves exactly the requested number of provider records', async 
 
   const jobs = await searchJobsDb(input);
   assert.deepEqual(jobs.map(job => job.id), ['one', 'two']);
+});
+
+test('JobsDB streams supported array shapes with the existing precedence and object filtering', () => {
+  const fromRoot = extractProviderJobs(Buffer.from('[null,{"id":"one"},[],{"id":"two"},{"id":"extra"}]'), 2);
+  assert.deepEqual(fromRoot, [{ id: 'one' }, { id: 'two' }]);
+
+  const fromEnvelope = extractProviderJobs(Buffer.from('{"data":{},"jobs":[null,{"id":"one"},{"id":"two"}],"results":[{"id":"ignored"}]}'), 2);
+  assert.deepEqual(fromEnvelope, [{ id: 'one' }, { id: 'two' }]);
+
+  for (const key of ['data', 'jobs', 'results', 'items']) {
+    assert.deepEqual(
+      extractProviderJobs(Buffer.from(JSON.stringify({ [key]: [{ id: key }] })), 2),
+      [{ id: key }],
+    );
+  }
+
+  const precedence = extractProviderJobs(Buffer.from('{"data":[],"jobs":[{"id":"ignored"}]}'), 2);
+  assert.deepEqual(precedence, []);
+});
+
+test('JobsDB streaming parser preserves last duplicate key semantics and rejects malformed trailing JSON', async () => {
+  assert.deepEqual(
+    extractProviderJobs(Buffer.from('{"jobs":[{"id":"old"}],"jobs":[{"id":"new"}]}'), 2),
+    [{ id: 'new' }],
+  );
+  assert.deepEqual(
+    extractProviderJobs(Buffer.from('{"jobs":[{"id":"old"}],"jobs":null,"results":[{"id":"fallback"}]}'), 2),
+    [{ id: 'fallback' }],
+  );
+
+  const overDepth = '['.repeat(129) + ']'.repeat(129);
+  for (const invalidBody of [
+    '{"jobs":[{"id":"one"}]} trailing',
+    '',
+    '  ',
+    '\uFEFF{"jobs":[]}',
+    overDepth,
+  ]) {
+    globalThis.fetch = (async () => new Response(invalidBody)) as typeof fetch;
+    await assert.rejects(searchJobsDb(input), /JobsDB returned an invalid JSON response/);
+  }
+});
+
+test('JobsDB streaming parser accepts 128 nesting levels and rejects level 129', () => {
+  const atLimit = Buffer.from('['.repeat(128) + ']'.repeat(128));
+  assert.deepEqual(extractProviderJobs(atLimit, 2), []);
+
+  const overLimit = Buffer.from('['.repeat(129) + ']'.repeat(129));
+  assert.throws(extractProviderJobs.bind(null, overLimit, 2), /maximum JSON nesting depth/);
+});
+
+test('JobsDB does not materialize every compact provider record before applying the result limit', () => {
+  const count = 1_000_000;
+  const body = Buffer.from('{"jobs":[' + '{},'.repeat(count - 1) + '{}]}');
+  assert.ok(body.byteLength < 4 * 1024 * 1024);
+  assert.deepEqual(extractProviderJobs(body, 2), [{}, {}]);
 });
 
 test('JobsDB accepts a response exactly at the byte limit', async () => {
