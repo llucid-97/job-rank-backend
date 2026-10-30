@@ -63,14 +63,18 @@ export async function getMatchHistory(request: Request, response: Response) {
   const input = querySchema.parse(request.query);
   const owner = request.auth!.userId;
   const base = () => supabaseAdmin.from("user_match_observations")
-    .select("resolved_model").eq("user_id", owner)
+    .select("resolved_model,rated_at").eq("user_id", owner)
     .eq("candidate_id", input.candidateId).eq("pipeline_version", input.pipelineVersion);
   const { data: latest, error: latestError } = await base()
-    .order("rated_at", { ascending: false }).order("id", { ascending: false })
-    .limit(1).maybeSingle();
+    .order("rated_at", { ascending: false }).limit(1).maybeSingle();
   if (latestError) throw latestError;
   if (!latest) return response.json({ data: { resolvedModel: null, scores: [] } });
   const model = latest.resolved_model;
+  // Equal latest timestamps across models do not establish which model is current.
+  const { data: competing, error: competingError } = await base()
+    .eq("rated_at", latest.rated_at).neq("resolved_model", model).limit(1).maybeSingle();
+  if (competingError) throw competingError;
+  if (competing) return response.json({ data: { resolvedModel: null, scores: [] } });
 
   const rows: { id: number; source: string; job_id: string; score: number }[] = [];
   let after: number | undefined;
