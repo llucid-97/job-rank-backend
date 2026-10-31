@@ -7,6 +7,7 @@ import { DocxResourceLimitError, UnsafeDocumentError } from "./docx-limits.js";
 import { PdfResourceLimitError } from "./pdf-resource-limit.js";
 import { PdfExtractionError } from "./pdf-extraction-error.js";
 import { PdfSandboxConfigurationError } from "./pdf-sandbox-extraction.service.js";
+import { retireFinalizedCandidateDocumentStaging } from "./candidate-document-staging-retirement.js";
 
 const bucketName = "candidate-documents";
 const stagingBucketName = "candidate-document-staging";
@@ -59,6 +60,46 @@ function hasExpectedSignature(buffer: Buffer, filename: string): boolean {
   return false;
 }
 
+/** Remove staged bytes after publication while retaining cron recovery on failure. */
+async function retireFinalizedUploadStaging(userId: string, uploadId: string) {
+  const result = await retireFinalizedCandidateDocumentStaging(
+    { userId, uploadId, sourcePath: `${userId}/${uploadId}/source` },
+    {
+      claim: async (ownerId, id, claimToken) => {
+        const { data, error } = await supabaseAdmin.rpc(
+          "claim_finalized_candidate_document_upload_retirement",
+          { p_id: id, p_user_id: ownerId, p_claim_token: claimToken },
+        );
+        if (error) throw error;
+        if (!["claimed", "not_found", "not_finalized", "busy"].includes(data)) {
+          throw new Error("Upload staging retirement claim returned an invalid result.");
+        }
+        return data;
+      },
+      removeSource: sourcePath =>
+        supabaseAdmin.storage.from(stagingBucketName).remove([sourcePath]),
+      releaseClaim: async (_ownerId, id, claimToken) => {
+        const { error } = await supabaseAdmin.rpc(
+          "release_candidate_document_upload_cleanup",
+          { p_claim_token: claimToken, p_ids: [id] },
+        );
+        if (error) throw error;
+      },
+    },
+  );
+
+  if (!result.ok) {
+    console.error("Candidate staging retirement deferred", {
+      uploadId,
+      stage: result.stage,
+      errorCode:
+        typeof result.error === "object" && result.error !== null && "code" in result.error
+          ? result.error.code
+          : result.error ? "UNKNOWN" : undefined,
+    });
+  }
+}
+
 /** Create an owner-bound, single-object signed upload into the private quarantine bucket. */
 export async function createCandidateDocumentUpload(
   request: Request,
@@ -76,7 +117,7 @@ export async function createCandidateDocumentUpload(
   if (intentError) throw intentError;
   if (intentCreated !== true) {
     return response.status(429).json({
-      error: { code: "UPLOAD_LIMIT_REACHED", message: "You have reached the limit of five unpurged uploads. Please try again after staging cleanup runs." },
+      error: { code: "UPLOAD_LIMIT_REACHED", message: "You have reached the upload limit. Finish or wait for a pending upload, or try again later." },
     });
   }
 
@@ -113,6 +154,7 @@ export async function finalizeCandidateDocumentUpload(
 
   const documentColumns = "id, user_id, document_type, filename, storage_path, extracted_text, content_hash, revision, is_active, created_at, updated_at";
   const displayFilename = safeFilename(originalFilename);
+  const stagingPath = `${userId}/${uploadId}/source`;
   const { data: alreadyFinalized, error: existingError } = await supabaseAdmin
     .from("candidate_documents").select(documentColumns)
     .eq("id", uploadId).eq("user_id", userId).maybeSingle();
@@ -121,6 +163,7 @@ export async function finalizeCandidateDocumentUpload(
     if (alreadyFinalized.document_type !== documentType || alreadyFinalized.filename !== displayFilename) {
       return response.status(409).json({ error: { code: "UPLOAD_ALREADY_FINALIZED", message: "This upload was finalized with different details. Please select the file again." } });
     }
+    await retireFinalizedUploadStaging(userId, uploadId);
     return response.status(201).json({ data: alreadyFinalized });
   }
 
@@ -131,7 +174,6 @@ export async function finalizeCandidateDocumentUpload(
     : ["md", "txt"].includes(originalExtension ?? "") ? "text/plain" : "";
   if (!sourceMime) return response.status(400).json({ error: { code: "UNSUPPORTED_DOCUMENT_TYPE", message: "Choose a PDF, DOCX, TXT or MD file." } });
 
-  const stagingPath = `${userId}/${uploadId}/source`;
   const finalPath = `${userId}/${uploadId}/document.md`;
   const claimToken = randomUUID();
   let documentId: string | undefined;
@@ -164,6 +206,7 @@ export async function finalizeCandidateDocumentUpload(
       if (completedDocument
           && completedDocument.document_type === documentType
           && completedDocument.filename === displayFilename) {
+        await retireFinalizedUploadStaging(userId, uploadId);
         return response.status(201).json({ data: completedDocument });
       }
       return response.status(409).json({ error: { code: "UPLOAD_ALREADY_FINALIZED", message: "This upload was finalized with different details. Please select the file again." } });
@@ -221,6 +264,7 @@ export async function finalizeCandidateDocumentUpload(
     }
     if (!document) throw new Error("Document replacement returned no record.");
     finalizationCompleted = true;
+    await retireFinalizedUploadStaging(userId, uploadId);
     return response.status(201).json({ data: document });
   } catch (error) {
     if (documentId) {
@@ -234,7 +278,10 @@ export async function finalizeCandidateDocumentUpload(
           && currentDocument.storage_path === expected.storagePath
           && currentDocument.extracted_text === expected.extractedText
           && currentDocument.content_hash === expected.contentHash;
-        if (matchesAttempt) return response.status(201).json({ data: currentDocument });
+        if (matchesAttempt) {
+          await retireFinalizedUploadStaging(userId, uploadId);
+          return response.status(201).json({ data: currentDocument });
+        }
         return response.status(409).json({ error: { code: "UPLOAD_ALREADY_FINALIZED", message: "This upload was finalized with different details. Please select the file again." } });
       }
     }
