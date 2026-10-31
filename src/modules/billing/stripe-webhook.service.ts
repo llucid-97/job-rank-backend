@@ -55,19 +55,37 @@ async function synchronizeCustomer(session: Stripe.Checkout.Session) {
 }
 
 async function completeCheckoutSession(session: Stripe.Checkout.Session) {
-  await synchronizeCustomer(session);
+  const metadataUserId = session.metadata?.user_id;
+  const userId = metadataUserId ?? session.client_reference_id;
+  const billingPlanId = session.metadata?.billing_plan_id;
+  if (metadataUserId && session.client_reference_id && metadataUserId !== session.client_reference_id) {
+    throw new Error(`Completed Stripe Checkout Session ${session.id} has conflicting user metadata.`);
+  }
+  if (!userId || !billingPlanId) {
+    throw new Error(`Completed Stripe Checkout Session ${session.id} is missing its user or billing plan metadata.`);
+  }
 
-  const { error } = await supabaseAdmin
-    .from("billing_checkout_sessions")
-    .update({
-      status: session.status ?? "complete",
-      stripe_customer_id: objectId(session.customer),
-      stripe_subscription_id: objectId(session.subscription),
-      completed_at: new Date().toISOString(),
-    })
-    .eq("stripe_checkout_session_id", session.id);
-
+  // Validate identity and reconcile the session before synchronizing customer
+  // ownership. The RPC preserves owner/plan and ignores stale terminal replays.
+  const { data: reconciliation, error } = await supabaseAdmin.rpc(
+    "record_billing_checkout_completion",
+    {
+      p_user_id: userId,
+      p_billing_plan_id: billingPlanId,
+      p_stripe_checkout_session_id: session.id,
+      p_stripe_customer_id: objectId(session.customer),
+      p_stripe_subscription_id: objectId(session.subscription),
+      p_checkout_url: session.url,
+      p_expires_at: isoFromUnix(session.expires_at),
+      p_completed_at: new Date().toISOString(),
+    },
+  );
   if (error) throw error;
+  if (reconciliation === "ignored_stale") return;
+  if (!(["inserted", "completed", "already_completed"] as unknown[]).includes(reconciliation)) {
+    throw new Error(`Checkout completion reconciliation returned an invalid result for ${session.id}.`);
+  }
+  await synchronizeCustomer(session);
 }
 
 function subscriptionPeriod(subscription: Stripe.Subscription) {
