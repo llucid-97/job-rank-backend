@@ -223,15 +223,18 @@ export async function createCheckoutSession(input: {
       idempotencyKey: `jobrank-checkout-${attemptId}`,
     });
 
-    const { error: sessionSaveError } = await supabaseAdmin.from("billing_checkout_sessions").insert({
-      user_id: input.userId,
-      billing_plan_id: attempt.billing_plan_id,
-      stripe_checkout_session_id: session.id,
-      stripe_customer_id: customerId ?? attempt.stripe_customer_id,
-      status: session.status ?? "open",
-      checkout_url: session.url,
-      expires_at: session.expires_at ? new Date(session.expires_at * 1000).toISOString() : null,
-    });
+    const { error: sessionSaveError } = await supabaseAdmin.from("billing_checkout_sessions").upsert(
+      {
+        user_id: input.userId,
+        billing_plan_id: attempt.billing_plan_id,
+        stripe_checkout_session_id: session.id,
+        stripe_customer_id: customerId ?? attempt.stripe_customer_id,
+        status: session.status ?? "open",
+        checkout_url: session.url,
+        expires_at: session.expires_at ? new Date(session.expires_at * 1000).toISOString() : null,
+      },
+      { onConflict: "stripe_checkout_session_id", ignoreDuplicates: true },
+    );
     if (sessionSaveError) throw sessionSaveError;
 
     // A lost finish response is safe: the persisted open session is checked

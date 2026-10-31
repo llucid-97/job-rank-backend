@@ -57,15 +57,29 @@ async function synchronizeCustomer(session: Stripe.Checkout.Session) {
 async function completeCheckoutSession(session: Stripe.Checkout.Session) {
   await synchronizeCustomer(session);
 
-  const { error } = await supabaseAdmin
-    .from("billing_checkout_sessions")
-    .update({
+  const userId = session.metadata?.user_id ?? session.client_reference_id;
+  const billingPlanId = session.metadata?.billing_plan_id;
+  if (!userId || !billingPlanId) {
+    throw new Error(`Completed Stripe Checkout Session ${session.id} is missing its user or billing plan metadata.`);
+  }
+
+  // The completion webhook can beat the API request that persists the session
+  // row. Upsert the authoritative completed state so that event ordering does
+  // not lose the subscription ID needed to block another checkout.
+  const { error } = await supabaseAdmin.from("billing_checkout_sessions").upsert(
+    {
+      user_id: userId,
+      billing_plan_id: billingPlanId,
+      stripe_checkout_session_id: session.id,
       status: session.status ?? "complete",
       stripe_customer_id: objectId(session.customer),
       stripe_subscription_id: objectId(session.subscription),
+      checkout_url: session.url,
+      expires_at: isoFromUnix(session.expires_at),
       completed_at: new Date().toISOString(),
-    })
-    .eq("stripe_checkout_session_id", session.id);
+    },
+    { onConflict: "stripe_checkout_session_id" },
+  );
 
   if (error) throw error;
 }

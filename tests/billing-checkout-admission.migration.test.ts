@@ -142,6 +142,12 @@ test("checkout admission is per-user, recoverable, immutable, and service-only",
       anon_can_read: false,
       authenticated_can_read: false,
     });
+    const sessionKeyIndex = await db.query(`
+      select i.indisunique
+      from pg_catalog.pg_index i
+      where i.indexrelid = 'public.billing_checkout_sessions_stripe_checkout_session_id_uidx'::regclass
+    `);
+    assert.deepEqual(sessionKeyIndex.rows, [{ indisunique: true }]);
   } finally {
     await db.close();
   }

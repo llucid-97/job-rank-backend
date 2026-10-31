@@ -42,6 +42,32 @@ async function withCheckoutMocks(options: TestOptions, run: (state: any) => Prom
   };
 
   (supabaseAdmin as any).from = (table: string) => {
+    const saveSession = async (row: any) => {
+      state.sessionInsertCount++;
+      if (options.ambiguousFirstSessionInsert && state.sessionInsertCount === 1) {
+        state.openSession = {
+          stripe_checkout_session_id: row.stripe_checkout_session_id,
+          checkout_url: row.checkout_url,
+          expires_at: row.expires_at,
+          billing_plan_id: row.billing_plan_id,
+          status: row.status ?? "open",
+          stripe_subscription_id: row.stripe_subscription_id ?? null,
+        };
+        return { error: { code: "08006", message: "synthetic lost insert response" } };
+      }
+      if (options.failFirstSessionInsert && state.sessionInsertCount === 1) {
+        return { error: { code: "08006", message: "synthetic uncommitted insert failure" } };
+      }
+      state.openSession = {
+        stripe_checkout_session_id: row.stripe_checkout_session_id,
+        checkout_url: row.checkout_url,
+        expires_at: row.expires_at,
+        billing_plan_id: row.billing_plan_id,
+        status: row.status ?? "open",
+        stripe_subscription_id: row.stripe_subscription_id ?? null,
+      };
+      return { error: null };
+    };
     const builder: any = {
       select() { return this; },
       eq() { return this; },
@@ -57,6 +83,7 @@ async function withCheckoutMocks(options: TestOptions, run: (state: any) => Prom
         throw new Error(`Unexpected maybeSingle table ${table}`);
       },
       upsert: async (row: any) => {
+        if (table === "billing_checkout_sessions") return saveSession(row);
         state.customerSaveCount++;
         if (options.failFirstCustomerSave && state.customerSaveCount === 1) {
           return { error: { code: "08006", message: "synthetic ambiguous customer save" } };
@@ -64,28 +91,7 @@ async function withCheckoutMocks(options: TestOptions, run: (state: any) => Prom
         state.localCustomer = row;
         return { error: null };
       },
-      insert: async (row: any) => {
-        state.sessionInsertCount++;
-        if (options.ambiguousFirstSessionInsert && state.sessionInsertCount === 1) {
-          state.openSession = {
-            stripe_checkout_session_id: row.stripe_checkout_session_id,
-            checkout_url: row.checkout_url,
-            expires_at: row.expires_at,
-            billing_plan_id: row.billing_plan_id,
-          };
-          return { error: { code: "08006", message: "synthetic lost insert response" } };
-        }
-        if (options.failFirstSessionInsert && state.sessionInsertCount === 1) {
-          return { error: { code: "08006", message: "synthetic uncommitted insert failure" } };
-        }
-        state.openSession = {
-          stripe_checkout_session_id: row.stripe_checkout_session_id,
-          checkout_url: row.checkout_url,
-          expires_at: row.expires_at,
-          billing_plan_id: row.billing_plan_id,
-        };
-        return { error: null };
-      },
+      insert: async (row: any) => saveSession(row),
     };
     return builder;
   };

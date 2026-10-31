@@ -24,6 +24,11 @@ create table public.billing_checkout_attempts (
   updated_at timestamptz not null default pg_catalog.clock_timestamp()
 );
 
+-- Both the API and webhook reconcile by Stripe's globally unique session ID.
+-- Enforce that conflict target explicitly before using PostgREST upsert.
+create unique index if not exists billing_checkout_sessions_stripe_checkout_session_id_uidx
+  on public.billing_checkout_sessions (stripe_checkout_session_id);
+
 alter table public.billing_checkout_attempts enable row level security;
 revoke all on public.billing_checkout_attempts from public, anon, authenticated;
 grant select, insert, update, delete on public.billing_checkout_attempts to service_role;
