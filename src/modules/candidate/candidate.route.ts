@@ -4,12 +4,11 @@ import { requireActiveAccount } from "../../middleware/require-active-account.js
 import {
   deactivateCandidateDocument,
   listCandidateDocuments,
-  uploadCandidateDocument,
   createCandidateDocumentUpload,
   finalizeCandidateDocumentUpload,
   cleanupCandidateDocumentUploads,
 } from "./candidate.controller.js";
-import { candidateDocumentUpload } from "./candidate_upload.middleware.js";
+import { uploadCandidateDocumentWithAdmission } from "./candidate-document-direct-upload.js";
 import {
   generateSkillsProfile,
   getActiveSkillsProfile,
@@ -37,8 +36,7 @@ candidateRouter.post(
   "/documents",
   authenticate,
   requireActiveAccount,
-  candidateDocumentUpload.single("file"),
-  uploadCandidateDocument,
+  uploadCandidateDocumentWithAdmission,
 );
 
 candidateRouter.post(
