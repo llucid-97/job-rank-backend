@@ -90,6 +90,12 @@ export async function createCheckoutSession(input: {
   if (claim?.status === "subscription_exists") {
     throw new AppError(409, "SUBSCRIPTION_ALREADY_EXISTS", "You already have a subscription. Use the billing portal to manage it.");
   }
+  if (claim?.status === "subscription_sync_pending") {
+    throw new AppError(503, "SUBSCRIPTION_SYNC_PENDING", "Your completed checkout is still being synchronized. Retry shortly.");
+  }
+  if (claim?.status === "checkout_subscription_unresolved") {
+    throw new AppError(409, "CHECKOUT_SUBSCRIPTION_UNRESOLVED", "A previous checkout is still tied to an unresolved subscription. Retry after it is canceled or expires.");
+  }
   if (claim?.status === "existing_session") {
     if (!claim.session?.checkout_url) {
       throw new AppError(503, "CHECKOUT_SESSION_UNAVAILABLE", "The existing checkout session is temporarily unavailable.");

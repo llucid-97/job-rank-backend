@@ -63,6 +63,44 @@ begin
     return pg_catalog.jsonb_build_object('status', 'subscription_exists');
   end if;
 
+  -- Checkout completion and subscription synchronization arrive as separate
+  -- Stripe webhook events. Hold admission after a completed checkout that
+  -- names a subscription until its row is visible. Once synchronized, the
+  -- normal active-status check above blocks paid subscriptions, while terminal
+  -- statuses such as canceled can start a fresh checkout.
+  if exists (
+    select 1
+    from public.billing_checkout_sessions checkout_session
+    where checkout_session.user_id = p_user_id
+      and checkout_session.status = 'complete'
+      and checkout_session.stripe_subscription_id is not null
+      and not exists (
+        select 1
+        from public.subscriptions subscription
+        where subscription.user_id = p_user_id
+          and subscription.stripe_subscription_id = checkout_session.stripe_subscription_id
+      )
+  ) then
+    return pg_catalog.jsonb_build_object('status', 'subscription_sync_pending');
+  end if;
+
+  -- A synchronized subscription that is still incomplete/paused (or has an
+  -- unfamiliar status) also remains associated with this completed checkout.
+  -- Only terminal canceled or expired-incomplete subscriptions release it.
+  if exists (
+    select 1
+    from public.billing_checkout_sessions checkout_session
+    join public.subscriptions subscription
+      on subscription.user_id = checkout_session.user_id
+     and subscription.stripe_subscription_id = checkout_session.stripe_subscription_id
+    where checkout_session.user_id = p_user_id
+      and checkout_session.status = 'complete'
+      and checkout_session.stripe_subscription_id is not null
+      and subscription.status not in ('canceled', 'incomplete_expired')
+  ) then
+    return pg_catalog.jsonb_build_object('status', 'checkout_subscription_unresolved');
+  end if;
+
   select stripe_checkout_session_id, checkout_url, expires_at, billing_plan_id
   into existing_session
   from public.billing_checkout_sessions

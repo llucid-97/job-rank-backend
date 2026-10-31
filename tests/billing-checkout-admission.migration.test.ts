@@ -19,11 +19,14 @@ test("checkout admission is per-user, recoverable, immutable, and service-only",
       create schema auth;
       create table auth.users (id uuid primary key);
       create table public.billing_plans (id uuid primary key, code text not null, stripe_price_id text not null);
-      create table public.subscriptions (id uuid primary key, user_id uuid not null, status text not null);
+      create table public.subscriptions (
+        id uuid primary key, user_id uuid not null, status text not null, stripe_subscription_id text unique
+      );
       create table public.billing_checkout_sessions (
         id bigint generated always as identity primary key,
         user_id uuid not null, billing_plan_id uuid not null, stripe_checkout_session_id text not null,
-        checkout_url text, expires_at timestamptz, status text not null, created_at timestamptz not null default now()
+        stripe_subscription_id text, checkout_url text, expires_at timestamptz, status text not null,
+        created_at timestamptz not null default now()
       );
       create table public.billing_customers (user_id uuid primary key, stripe_customer_id text not null, email text);
       grant usage on schema public, auth to anon, authenticated, service_role;
@@ -32,7 +35,7 @@ test("checkout admission is per-user, recoverable, immutable, and service-only",
       grant select on public.billing_checkout_sessions to service_role;
       grant insert, select, update on public.billing_checkout_sessions to service_role;
       grant select, insert, update on public.billing_customers to service_role;
-      insert into auth.users values ('${uuid(1)}'), ('${uuid(2)}');
+      insert into auth.users values ('${uuid(1)}'), ('${uuid(2)}'), ('${uuid(3)}'), ('${uuid(4)}');
       insert into public.billing_plans values ('${uuid(10)}', 'starter', 'price-starter'), ('${uuid(11)}', 'pro', 'price-pro');
     `);
     await db.exec(await readFile(migration, "utf8"));
@@ -95,6 +98,33 @@ test("checkout admission is per-user, recoverable, immutable, and service-only",
     await db.query("insert into public.subscriptions(id,user_id,status) values ($1,$2,'active')", [uuid(40), owner]);
     const active = await claim(owner, uuid(11), "pro", "price-pro", uuid(27), uuid(37));
     assert.equal(active.rows[0].result.status, "subscription_exists");
+
+    const pendingOwner = uuid(3);
+    await db.query(
+      "insert into public.billing_checkout_sessions(user_id,billing_plan_id,stripe_checkout_session_id,stripe_subscription_id,checkout_url,expires_at,status) values ($1,$2,'cs-complete','sub-pending','https://checkout.invalid/complete',now()-interval '1 minute','complete')",
+      [pendingOwner, uuid(10)],
+    );
+    const pending = await claim(pendingOwner, uuid(10), "starter", "price-starter", uuid(41), uuid(42));
+    assert.equal(pending.rows[0].result.status, "subscription_sync_pending");
+
+    await db.query(
+      "insert into public.subscriptions(id,user_id,status,stripe_subscription_id) values ($1,$2,'canceled','sub-pending')",
+      [uuid(43), pendingOwner],
+    );
+    const canceled = await claim(pendingOwner, uuid(10), "starter", "price-starter", uuid(44), uuid(45));
+    assert.equal(canceled.rows[0].result.status, "claimed", "terminal subscription sync releases checkout admission");
+
+    const incompleteOwner = uuid(4);
+    await db.query(
+      "insert into public.billing_checkout_sessions(user_id,billing_plan_id,stripe_checkout_session_id,stripe_subscription_id,checkout_url,expires_at,status) values ($1,$2,'cs-incomplete','sub-incomplete','https://checkout.invalid/incomplete',now()-interval '1 minute','complete')",
+      [incompleteOwner, uuid(10)],
+    );
+    await db.query(
+      "insert into public.subscriptions(id,user_id,status,stripe_subscription_id) values ($1,$2,'incomplete','sub-incomplete')",
+      [uuid(46), incompleteOwner],
+    );
+    const unresolved = await claim(incompleteOwner, uuid(10), "starter", "price-starter", uuid(47), uuid(48));
+    assert.equal(unresolved.rows[0].result.status, "checkout_subscription_unresolved");
 
     await db.exec("reset role");
     const grants = await db.query(`
