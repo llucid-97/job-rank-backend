@@ -57,6 +57,7 @@ test("direct upload intent is owner-bound and finalization stores normalized Mar
         assert.equal(path, stagingPath);
         return { data: new Blob(["  Ada Lovelace  \r\n\r\n\r\nEngineer  "]), error: null };
       },
+      remove: async () => ({ data: [], error: null }),
     };
     assert.equal(bucket, "candidate-documents");
     return {
@@ -75,6 +76,8 @@ test("direct upload intent is owner-bound and finalization stores normalized Mar
       return Promise.resolve({ data: allowIntent, error: null });
     }
     if (name === "claim_candidate_document_upload_finalization") return Promise.resolve({ data: "claimed", error: null });
+    if (name === "claim_finalized_candidate_document_upload_retirement") return Promise.resolve({ data: "claimed", error: null });
+    if (name === "release_candidate_document_upload_cleanup") return Promise.resolve({ data: 1, error: null });
     if (name === "complete_candidate_document_upload_finalization") {
       rpcArgs = args;
       finalizedRow = {
@@ -282,6 +285,8 @@ test("direct finalization retries an orphaned Markdown object after an ambiguous
       finalizationLeaseActive = false;
       return Promise.resolve({ data: true, error: null });
     }
+    if (name === "claim_finalized_candidate_document_upload_retirement") return Promise.resolve({ data: "claimed", error: null });
+    if (name === "release_candidate_document_upload_cleanup") return Promise.resolve({ data: 1, error: null });
     if (name === "claim_candidate_document_uploads_for_cleanup") {
       const data = intentExpired && !finalizationLeaseActive
         ? [{ id: uploadId, user_id: "owner-a", final_storage_path: `owner-a/${uploadId}/document.md` }]
@@ -375,6 +380,7 @@ test("concurrent finalizations for the same upload return the winning document",
   };
   (supabaseAdmin as any).storage.from = (bucket: string) => bucket === "candidate-document-staging" ? {
     download: async () => ({ data: new Blob(["Concurrent"]), error: null }),
+    remove: async () => ({ data: [], error: null }),
   } : {
     upload: async (path: string, body: Buffer) => {
       if (objects.has(path)) return { error: { code: "Duplicate" } };
@@ -392,6 +398,8 @@ test("concurrent finalizations for the same upload return the winning document",
       return Promise.resolve({ data: claimCalls === 1 ? "claimed" : "busy", error: null });
     }
     if (name === "release_candidate_document_upload_finalization") return Promise.resolve({ data: true, error: null });
+    if (name === "claim_finalized_candidate_document_upload_retirement") return Promise.resolve({ data: "claimed", error: null });
+    if (name === "release_candidate_document_upload_cleanup") return Promise.resolve({ data: 1, error: null });
     assert.equal(name, "complete_candidate_document_upload_finalization");
     return { single: async () => {
       rpcCalls++;
