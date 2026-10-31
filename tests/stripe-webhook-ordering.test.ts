@@ -148,6 +148,62 @@ test("Stripe retrieval failure leaves entitlement state untouched", async () => 
   assert.deepEqual(writes, []);
 });
 
+test("conflicting Checkout Session identity metadata is rejected before customer synchronization", async () => {
+  let fromCalls = 0;
+  supabaseAdmin.from = ((table: string) => {
+    fromCalls++;
+    throw new Error(`Unexpected database access for ${table}`);
+  }) as typeof supabaseAdmin.from;
+
+  await assert.rejects(
+    processStripeEvent({
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: "cs-conflicting-user",
+          customer: "cus-synthetic",
+          subscription: "sub-synthetic",
+          client_reference_id: "user-reference",
+          metadata: { user_id: "different-user", billing_plan_id: "plan-synthetic" },
+        },
+      },
+    } as any),
+    /conflicting user metadata/,
+  );
+  assert.equal(fromCalls, 0, "customer ownership is untouched until session identity is validated");
+});
+
+test("stored session identity conflicts and stale completion replays never sync customer ownership", async () => {
+  let fromCalls = 0;
+  supabaseAdmin.from = ((table: string) => {
+    fromCalls++;
+    throw new Error(`Unexpected database access for ${table}`);
+  }) as typeof supabaseAdmin.from;
+
+  supabaseAdmin.rpc = (async () => ({
+    data: null,
+    error: new Error("stored checkout identity conflict"),
+  })) as typeof supabaseAdmin.rpc;
+  const event = {
+    type: "checkout.session.completed",
+    data: {
+      object: {
+        id: "cs-stored-conflict",
+        customer: "cus-synthetic",
+        subscription: "sub-synthetic",
+        client_reference_id: "user-synthetic",
+        metadata: { user_id: "user-synthetic", billing_plan_id: "plan-synthetic" },
+      },
+    },
+  } as any;
+  await assert.rejects(processStripeEvent(event), /stored checkout identity conflict/);
+  assert.equal(fromCalls, 0, "stored owner/plan conflict is detected before customer sync");
+
+  supabaseAdmin.rpc = (async () => ({ data: "ignored_stale", error: null })) as typeof supabaseAdmin.rpc;
+  await processStripeEvent(event);
+  assert.equal(fromCalls, 0, "stale completion replay leaves customer ownership untouched");
+});
+
 test("distinct subscription events serialize retrieval and state writes", async () => {
   const writes: Array<{ table: string; action: string; value: any }> = [];
   installDatabase(writes);

@@ -29,6 +29,63 @@ create table public.billing_checkout_attempts (
 create unique index if not exists billing_checkout_sessions_stripe_checkout_session_id_uidx
   on public.billing_checkout_sessions (stripe_checkout_session_id);
 
+create function public.record_billing_checkout_completion(
+  p_user_id uuid,
+  p_billing_plan_id uuid,
+  p_stripe_checkout_session_id text,
+  p_stripe_customer_id text,
+  p_stripe_subscription_id text,
+  p_checkout_url text,
+  p_expires_at timestamptz,
+  p_completed_at timestamptz
+) returns text
+language plpgsql security invoker set search_path = '' as $$
+declare
+  checkout_session public.billing_checkout_sessions%rowtype;
+begin
+  if p_user_id is null or p_billing_plan_id is null
+     or p_stripe_checkout_session_id is null or p_completed_at is null then
+    raise exception 'Invalid billing checkout completion arguments';
+  end if;
+
+  insert into public.billing_checkout_sessions (
+    user_id, billing_plan_id, stripe_checkout_session_id, stripe_customer_id,
+    stripe_subscription_id, checkout_url, expires_at, status, completed_at
+  ) values (
+    p_user_id, p_billing_plan_id, p_stripe_checkout_session_id, p_stripe_customer_id,
+    p_stripe_subscription_id, p_checkout_url, p_expires_at, 'complete', p_completed_at
+  ) on conflict (stripe_checkout_session_id) do nothing;
+
+  if found then return 'inserted'; end if;
+
+  select * into checkout_session
+  from public.billing_checkout_sessions
+  where stripe_checkout_session_id = p_stripe_checkout_session_id
+  for update;
+  if not found then raise exception 'Billing checkout session disappeared during reconciliation'; end if;
+  if checkout_session.user_id <> p_user_id
+     or checkout_session.billing_plan_id <> p_billing_plan_id then
+    raise exception 'Stripe checkout session owner or plan metadata conflicts with the stored session';
+  end if;
+
+  if checkout_session.status = 'open' then
+    update public.billing_checkout_sessions
+    set status = 'complete',
+        stripe_customer_id = coalesce(stripe_customer_id, p_stripe_customer_id),
+        stripe_subscription_id = coalesce(stripe_subscription_id, p_stripe_subscription_id),
+        checkout_url = coalesce(checkout_url, p_checkout_url),
+        expires_at = coalesce(expires_at, p_expires_at),
+        completed_at = coalesce(completed_at, p_completed_at)
+    where stripe_checkout_session_id = p_stripe_checkout_session_id;
+    return 'completed';
+  end if;
+
+  if checkout_session.status = 'complete' then return 'already_completed'; end if;
+  -- A delayed completion replay cannot move an expired/canceled terminal row.
+  return 'ignored_stale';
+end;
+$$;
+
 alter table public.billing_checkout_attempts enable row level security;
 revoke all on public.billing_checkout_attempts from public, anon, authenticated;
 grant select, insert, update, delete on public.billing_checkout_attempts to service_role;
@@ -297,6 +354,8 @@ $$;
 
 revoke all on function public.claim_billing_checkout_attempt(uuid, uuid, uuid, uuid, text, text, text, text, text)
   from public, anon, authenticated;
+revoke all on function public.record_billing_checkout_completion(uuid, uuid, text, text, text, text, timestamptz, timestamptz)
+  from public, anon, authenticated;
 revoke all on function public.mark_billing_checkout_customer_creation_started(uuid, uuid, uuid)
   from public, anon, authenticated;
 revoke all on function public.save_billing_checkout_params(uuid, uuid, uuid, text, jsonb)
@@ -309,6 +368,8 @@ revoke all on function public.finish_billing_checkout_attempt(uuid, uuid, uuid)
   from public, anon, authenticated;
 
 grant execute on function public.claim_billing_checkout_attempt(uuid, uuid, uuid, uuid, text, text, text, text, text)
+  to service_role;
+grant execute on function public.record_billing_checkout_completion(uuid, uuid, text, text, text, text, timestamptz, timestamptz)
   to service_role;
 grant execute on function public.mark_billing_checkout_customer_creation_started(uuid, uuid, uuid)
   to service_role;

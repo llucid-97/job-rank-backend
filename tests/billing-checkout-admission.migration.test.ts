@@ -25,8 +25,8 @@ test("checkout admission is per-user, recoverable, immutable, and service-only",
       create table public.billing_checkout_sessions (
         id bigint generated always as identity primary key,
         user_id uuid not null, billing_plan_id uuid not null, stripe_checkout_session_id text not null,
-        stripe_subscription_id text, checkout_url text, expires_at timestamptz, status text not null,
-        created_at timestamptz not null default now()
+        stripe_customer_id text, stripe_subscription_id text, checkout_url text, expires_at timestamptz, status text not null,
+        completed_at timestamptz, created_at timestamptz not null default now()
       );
       create table public.billing_customers (user_id uuid primary key, stripe_customer_id text not null, email text);
       grant usage on schema public, auth to anon, authenticated, service_role;
@@ -132,6 +132,8 @@ test("checkout admission is per-user, recoverable, immutable, and service-only",
         has_function_privilege('service_role', 'public.claim_billing_checkout_attempt(uuid,uuid,uuid,uuid,text,text,text,text,text)', 'execute') as service_can_claim,
         has_function_privilege('anon', 'public.claim_billing_checkout_attempt(uuid,uuid,uuid,uuid,text,text,text,text,text)', 'execute') as anon_can_claim,
         has_function_privilege('authenticated', 'public.claim_billing_checkout_attempt(uuid,uuid,uuid,uuid,text,text,text,text,text)', 'execute') as authenticated_can_claim,
+        has_function_privilege('service_role', 'public.record_billing_checkout_completion(uuid,uuid,text,text,text,text,timestamptz,timestamptz)', 'execute') as service_can_reconcile,
+        has_function_privilege('anon', 'public.record_billing_checkout_completion(uuid,uuid,text,text,text,text,timestamptz,timestamptz)', 'execute') as anon_can_reconcile,
         has_table_privilege('anon', 'public.billing_checkout_attempts', 'select') as anon_can_read,
         has_table_privilege('authenticated', 'public.billing_checkout_attempts', 'select') as authenticated_can_read
     `);
@@ -139,6 +141,8 @@ test("checkout admission is per-user, recoverable, immutable, and service-only",
       service_can_claim: true,
       anon_can_claim: false,
       authenticated_can_claim: false,
+      service_can_reconcile: true,
+      anon_can_reconcile: false,
       anon_can_read: false,
       authenticated_can_read: false,
     });
@@ -148,6 +152,32 @@ test("checkout admission is per-user, recoverable, immutable, and service-only",
       where i.indexrelid = 'public.billing_checkout_sessions_stripe_checkout_session_id_uidx'::regclass
     `);
     assert.deepEqual(sessionKeyIndex.rows, [{ indisunique: true }]);
+
+    const recordCompletion = (userId: string, planId: string, sessionId: string, subscriptionId: string | null) => db.query(
+      "select public.record_billing_checkout_completion($1,$2,$3,$4,$5,$6,$7,$8) as result",
+      [userId, planId, sessionId, "cus-reconcile", subscriptionId, "https://checkout.invalid/reconcile", new Date(Date.now() + 3600_000).toISOString(), new Date().toISOString()],
+    );
+    await db.query(
+      "insert into public.billing_checkout_sessions(user_id,billing_plan_id,stripe_checkout_session_id,checkout_url,expires_at,status) values ($1,$2,'cs-reconcile','https://checkout.invalid/reconcile',now()+interval '1 hour','open')",
+      [uuid(2), uuid(10)],
+    );
+    assert.equal((await recordCompletion(uuid(2), uuid(10), "cs-reconcile", "sub-reconcile")).rows[0].result, "completed");
+    const reconciled = await db.query(
+      "select user_id,billing_plan_id,status,stripe_subscription_id from public.billing_checkout_sessions where stripe_checkout_session_id='cs-reconcile'",
+    );
+    assert.deepEqual(reconciled.rows[0], {
+      user_id: uuid(2), billing_plan_id: uuid(10), status: "complete", stripe_subscription_id: "sub-reconcile",
+    });
+    await assert.rejects(() => recordCompletion(uuid(1), uuid(10), "cs-reconcile", "sub-reconcile"), /owner or plan metadata conflicts/);
+    await assert.rejects(() => recordCompletion(uuid(2), uuid(11), "cs-reconcile", "sub-reconcile"), /owner or plan metadata conflicts/);
+    await db.query("update public.billing_checkout_sessions set status='expired' where stripe_checkout_session_id='cs-reconcile'");
+    assert.equal((await recordCompletion(uuid(2), uuid(10), "cs-reconcile", "sub-reconcile")).rows[0].result, "ignored_stale");
+    const replayed = await db.query(
+      "select status from public.billing_checkout_sessions where stripe_checkout_session_id='cs-reconcile'",
+    );
+    assert.equal(replayed.rows[0].status, "expired", "a delayed completion replay cannot reopen a terminal session");
+    assert.equal((await recordCompletion(uuid(3), uuid(11), "cs-webhook-first", "sub-webhook-first")).rows[0].result, "inserted");
+    assert.equal((await recordCompletion(uuid(3), uuid(11), "cs-webhook-first", "sub-webhook-first")).rows[0].result, "already_completed");
   } finally {
     await db.close();
   }

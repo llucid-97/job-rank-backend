@@ -60,6 +60,35 @@ test("completion webhook before local checkout persistence stays durable after t
   };
 
   (supabaseAdmin as any).rpc = async (name: string, args: Record<string, any>) => {
+    if (name === "record_billing_checkout_completion") {
+      if (state.checkoutRow) {
+        if (state.checkoutRow.user_id !== args.p_user_id || state.checkoutRow.billing_plan_id !== args.p_billing_plan_id) {
+          return { data: null, error: new Error("stored checkout identity conflict") };
+        }
+        if (state.checkoutRow.status === "open") {
+          state.checkoutRow = {
+            ...state.checkoutRow,
+            status: "complete",
+            stripe_customer_id: state.checkoutRow.stripe_customer_id ?? args.p_stripe_customer_id,
+            stripe_subscription_id: state.checkoutRow.stripe_subscription_id ?? args.p_stripe_subscription_id,
+            completed_at: args.p_completed_at,
+          };
+        }
+        return { data: state.checkoutRow.status === "complete" ? "already_completed" : "ignored_stale", error: null };
+      }
+      state.checkoutRow = {
+        user_id: args.p_user_id,
+        billing_plan_id: args.p_billing_plan_id,
+        stripe_checkout_session_id: args.p_stripe_checkout_session_id,
+        stripe_customer_id: args.p_stripe_customer_id,
+        stripe_subscription_id: args.p_stripe_subscription_id,
+        checkout_url: args.p_checkout_url,
+        expires_at: args.p_expires_at,
+        completed_at: args.p_completed_at,
+        status: "complete",
+      };
+      return { data: "inserted", error: null };
+    }
     if (name === "claim_billing_checkout_attempt") {
       if (state.checkoutRow?.status === "complete" && state.checkoutRow.stripe_subscription_id) {
         return { data: { status: "subscription_sync_pending" }, error: null };
