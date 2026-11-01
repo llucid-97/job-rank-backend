@@ -104,7 +104,7 @@ const jobInput = z.object({
 }).strict();
 
 /** Validate the selected input contract before consuming quota or calling the provider. */
-providerRouter.post("/llm/generate", async (request, response) => {
+export async function generateLlm(request: Request, response: Response) {
   const body: unknown = request.body;
   if (!object(body) ||
       (body.maxTokens !== undefined && (!Number.isInteger(body.maxTokens) || (body.maxTokens as number) < 1 || (body.maxTokens as number) > constraintOutputTokens)) ||
@@ -143,7 +143,9 @@ providerRouter.post("/llm/generate", async (request, response) => {
   } catch {
     throw new AppError(502, "PROVIDER_FAILED", "Language model request failed.");
   }
-});
+}
+
+providerRouter.post("/llm/generate", generateLlm);
 
 export function allowedFeed(raw: string): boolean {
   let url: URL;
