@@ -8,6 +8,7 @@
     }
   },
   "crons": [
-    { "path": "/v1/candidate/documents/staging-cleanup", "schedule": "15 3 * * *" }
+    { "path": "/v1/candidate/documents/staging-cleanup", "schedule": "15 3 * * *" },
+    { "path": "/v1/internal/codex-test-accounts/cleanup", "schedule": "30 3 * * *" }
   ]
 }

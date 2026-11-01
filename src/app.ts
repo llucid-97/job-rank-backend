@@ -14,6 +14,7 @@ import { rankingRouter } from "./modules/rankings/ranking.routes.js";
 import { handleStripeWebhook } from "./modules/billing/stripe-webhook.controller.js";
 import { billingRouter } from "./modules/billing/billing.route.js";
 import { providerRouter } from "./modules/provider-proxy/provider.routes.js";
+import { codexTestAccountsRouter } from "./modules/internal/codex-test-accounts.route.js";
 
 export const app = express();
 
@@ -66,6 +67,7 @@ app.get("/health", (_request, response) => {
 });
 
 app.use("/v1", providerRouter);
+app.use("/v1/internal/codex-test-accounts", codexTestAccountsRouter);
 app.use("/v1/auth-test", authTestRouter);
 app.use("/v1/candidate", candidateRouter);
 app.use("/v1/jobs", jobRouter);
