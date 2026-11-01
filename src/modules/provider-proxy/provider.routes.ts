@@ -121,8 +121,8 @@ export async function generateLlm(request: Request, response: Response) {
     if (body.prompt !== undefined) invalid();
     messages = jobConstraintMessages(jobInput.parse(body.input).posting);
   } else {
-    // Older clients retain a bounded fallback; longer job postings require the new workflow.
-    const limit = body.workflow === "candidateProfile" ? 200000 : 8192;
+    // Old clients send a full prompt; the new structured workflows cap each user field separately.
+    const limit = 200000;
     if (typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > limit) invalid();
     messages = [{ role: "user", content: body.prompt }];
   }
