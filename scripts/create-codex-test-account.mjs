@@ -62,7 +62,9 @@ if (command === "adopt") {
 const accountId = randomUUID();
 const email = `codex-test-agent-${randomBytes(16).toString("hex")}@example.invalid`;
 const password = randomBytes(36).toString("base64url");
+const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 let createdUserId;
+let credentialPath;
 
 try {
   // Keep a new Auth identity out of circulation until its expiry marker and private queue row agree.
@@ -74,35 +76,24 @@ try {
     app_metadata: {
       codex_test_account: true,
       codex_test_account_id: accountId,
+      codex_test_label: label,
+      codex_test_expires_at: expiresAt,
     },
   });
   if (error || !data.user) throw error ?? new Error("Auth did not return a user.");
   createdUserId = data.user.id;
 
-  // Start the seven-day window after identity creation and persist one trusted expiry in both stores.
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  const { error: metadataError } = await admin.auth.admin.updateUserById(createdUserId, {
-    app_metadata: {
-      codex_test_account: true,
-      codex_test_account_id: accountId,
-      codex_test_expires_at: expiresAt,
-    },
-  });
-  if (metadataError) throw metadataError;
-
-  const { error: recordError } = await admin.from("codex_test_accounts").insert({
-    user_id: createdUserId,
-    account_id: accountId,
-    label,
-    email,
-    expires_at: expiresAt,
-  });
-  if (recordError) throw recordError;
+  // The auth.users trigger inserts the cleanup record in this same transaction.
+  const { data: queued, error: queueError } = await admin.from("codex_test_accounts")
+    .select("account_id,email,expires_at").eq("user_id", createdUserId).maybeSingle();
+  if (queueError || !queued || queued.account_id !== accountId || queued.email !== email || Date.parse(queued.expires_at) !== Date.parse(expiresAt)) {
+    throw queueError ?? new Error("Auth account did not receive its matching expiry record.");
+  }
 
   const directory = join(homedir(), ".codex", "jobrank-test-accounts");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   chmodSync(directory, 0o700);
-  const credentialPath = join(directory, `${accountId}.json`);
+  credentialPath = join(directory, `${accountId}.json`);
   if (existsSync(credentialPath)) throw new Error("Credential file already exists.");
   writeFileSync(credentialPath, `${JSON.stringify({
     account_id: accountId,
@@ -116,7 +107,15 @@ try {
   chmodSync(credentialPath, 0o600);
   console.log(JSON.stringify({ created: true, user_id: createdUserId, expires_at: expiresAt, credentials_path: credentialPath }));
 } catch (error) {
-  if (createdUserId) await admin.auth.admin.deleteUser(createdUserId).catch(() => undefined);
+  if (credentialPath && existsSync(credentialPath)) await import("node:fs/promises").then(({ unlink }) => unlink(credentialPath)).catch(() => undefined);
+  if (createdUserId) {
+    try {
+      const { error: deleteError } = await admin.auth.admin.deleteUser(createdUserId);
+      if (deleteError) throw deleteError;
+    } catch (rollbackError) {
+      console.error(JSON.stringify({ rollback_pending: true, user_id: createdUserId, error: rollbackError?.code ?? rollbackError?.name ?? "unknown" }));
+    }
+  }
   console.error(`Test-account creation failed: ${error?.code ?? error?.name ?? "unknown error"}`);
   process.exitCode = 1;
 }
