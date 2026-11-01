@@ -8,9 +8,7 @@ create table public.codex_test_accounts (
   email text not null unique,
   created_at timestamptz not null default pg_catalog.now(),
   last_attempt_at timestamptz,
-  expires_at timestamptz not null check (
-    expires_at > created_at and expires_at <= created_at + interval '7 days'
-  )
+  expires_at timestamptz not null check (expires_at <= created_at + interval '7 days')
 );
 
 create index codex_test_accounts_expiry_idx
