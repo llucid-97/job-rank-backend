@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { boundedText } from "./search-state.schema.js";
 
+/** Keep provider search inputs aligned with the user-visible character limit. */
 export const jobSearchSchema = z.object({
-  query: z.string().trim().max(200),
-  historyQuery: z.string().trim().max(200).optional(),
+  query: boundedText(200, 1600).transform(value => value.trim()),
+  historyQuery: boundedText(200, 1600).transform(value => value.trim()).optional(),
   sourceSite: z.enum(["jobsdb", "linkedin"]).default("jobsdb"),
   persistResults: z.boolean().default(true),
   isRemote: z.boolean().default(false),

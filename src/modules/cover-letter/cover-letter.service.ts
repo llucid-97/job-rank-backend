@@ -7,6 +7,7 @@ import { buildCoverLetterPrompt } from "./cover-letter.prompt.js";
 
 const promptVersion = "1.0.0";
 
+/** Generate bounded provider output only for a job owned by the active account. */
 export async function generateCoverLetter(input: {
   userId: string;
   jobId: string;
@@ -120,6 +121,7 @@ export async function generateCoverLetter(input: {
       },
       body: JSON.stringify({
         model,
+        max_tokens: 4096,
         messages: [
           {
             role: "user",

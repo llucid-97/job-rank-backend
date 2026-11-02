@@ -5,6 +5,9 @@ import { consumePublicFeedRequest } from "./public-feed-quota.js";
 import { authenticate } from "../../middleware/authenticate.js";
 import { requireActiveAccount } from "../../middleware/require-active-account.js";
 import { AppError } from "../../middleware/error-handling.js";
+import { z } from "zod";
+import { constraintModel, constraintOutputTokens, jevModel, jobConstraintMessages, searchConstraintMessages } from "./constraint-prompts.js";
+import { boundedText } from "../jobs/search-state.schema.js";
 
 export const providerRouter = Router();
 providerRouter.use(["/jev", "/llm", "/feed"], authenticate, requireActiveAccount);
@@ -90,19 +93,47 @@ providerRouter.post("/jev/rank", async (request, response) => {
   }
 });
 
+// Structured inputs keep the server's extraction instructions separate from user data.
+const searchInput = z.object({
+  preferences: boundedText(2000, 16384),
+  mustHaves: boundedText(2000, 16384),
+}).strict().refine(value => value.preferences.trim() || value.mustHaves.trim());
+const jobInput = z.object({
+  posting: z.string().max(200000).refine(value => value.trim().length > 0 &&
+    !value.includes("\0") && Buffer.byteLength(value, "utf8") <= 524288),
+}).strict();
+
+/** Validate the selected input contract before consuming quota or calling the provider. */
 export async function generateLlm(request: Request, response: Response) {
   const body: unknown = request.body;
-  if (!object(body) || typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 200_000 ||
-      (body.maxTokens !== undefined && (!Number.isInteger(body.maxTokens) || (body.maxTokens as number) < 1 || (body.maxTokens as number) > 4096)) ||
+  if (!object(body) ||
+      (body.maxTokens !== undefined && (!Number.isInteger(body.maxTokens) || (body.maxTokens as number) < 1 || (body.maxTokens as number) > constraintOutputTokens)) ||
       (body.temperature !== undefined && (typeof body.temperature !== "number" || body.temperature < 0 || body.temperature > 1)) ||
-      (body.workflow !== undefined && body.workflow !== "constraints" && body.workflow !== "candidateProfile") ||
+      (body.workflow !== undefined && !["constraints", "candidateProfile", "searchConstraints", "jobConstraints"].includes(String(body.workflow))) ||
       (body.responseFormat !== undefined && body.responseFormat !== "json_object")) invalid();
+
+  let messages: { role: string; content: string }[];
+  if (body.workflow === "searchConstraints") {
+    if (body.prompt !== undefined) invalid();
+    const input = searchInput.parse(body.input);
+    messages = searchConstraintMessages(input.preferences, input.mustHaves);
+  } else if (body.workflow === "jobConstraints") {
+    if (body.prompt !== undefined) invalid();
+    messages = jobConstraintMessages(jobInput.parse(body.input).posting);
+  } else {
+    // Old clients send a full prompt; the new structured workflows cap each user field separately.
+    const limit = 200000;
+    if (typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > limit) invalid();
+    messages = [{ role: "user", content: body.prompt }];
+  }
+
   await consumeQuota(request.auth!.userId, "llm", 1);
+  // Do not send user-chosen models or an unbounded response budget upstream.
   try {
     const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(60_000),
       headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: body.workflow === "candidateProfile" ? env.SKILLS_JSON_GENERATION_MODEL : "openai/gpt-5.6-luna", messages: [{ role: "user", content: body.prompt }], max_tokens: body.maxTokens ?? 4096, temperature: body.temperature ?? 0, ...(body.responseFormat === "json_object" ? { response_format: { type: "json_object" } } : {}) }),
+      body: JSON.stringify({ model: body.workflow === "candidateProfile" ? env.SKILLS_JSON_GENERATION_MODEL : constraintModel, messages, max_tokens: body.maxTokens ?? constraintOutputTokens, temperature: body.temperature ?? 0, ...(body.responseFormat === "json_object" ? { response_format: { type: "json_object" } } : {}) }),
     });
     if (!upstream.ok) throw new Error("Provider failed.");
     const result = JSON.parse((await readBounded(upstream, 2 * 1024 * 1024)).toString("utf8"));
