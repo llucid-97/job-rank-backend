@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { z } from "zod";
 import { supabaseAdmin } from "../../config/supabase.js";
+import { env } from "../../config/env.js";
 import { AppError } from "../../middleware/error-handling.js";
 import { boundedText, searchStateSchema } from "../jobs/search-state.schema.js";
 
@@ -20,8 +21,9 @@ const updatePreferencesSchema = z.object({
   showArchivedJobs: z.boolean().optional(),
   showHiddenJobs: z.boolean().optional(),
   sortBy: z.string().min(1).optional(),
+  // Keep preference writes aligned with the choices persisted in saved batches.
   jobsFetchLimit: z
-    .union([z.literal(10), z.literal(25), z.literal(50), z.literal(100)])
+    .union([z.literal(1), z.literal(3), z.literal(5), z.literal(10), z.literal(25), z.literal(50), z.literal(100)])
     .optional(),
 });
 
@@ -72,8 +74,11 @@ export async function getMe(
         role: role.data.role,
         plan: entitlement.data.plan,
         accountStatus: entitlement.data.account_status,
-        monthlyRequestLimit: entitlement.data.monthly_request_limit,
-        monthlySpendLimitUsd: entitlement.data.ai_cost_limit_usd,
+        // Keep the stored tier intact while exposing the server-granted effective tier.
+        effectivePlan: env.ALPHA_PREMIUM_ACCESS ? "premium" : entitlement.data.plan,
+        alphaPremiumAccess: env.ALPHA_PREMIUM_ACCESS,
+        monthlyRequestLimit: env.ALPHA_PREMIUM_ACCESS ? null : entitlement.data.monthly_request_limit,
+        monthlySpendLimitUsd: env.ALPHA_PREMIUM_ACCESS ? null : entitlement.data.ai_cost_limit_usd,
         aiSpendLimitEnforced: false,
         aiSpendLimitNotice: "Target only; not an enforced hard spending cap.",
         createdAt: profile.data.created_at,

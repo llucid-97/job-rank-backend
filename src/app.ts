@@ -13,6 +13,7 @@ import { jobRouter } from "./modules/jobs/job.routes.js";
 import { rankingRouter } from "./modules/rankings/ranking.routes.js";
 import { handleStripeWebhook } from "./modules/billing/stripe-webhook.controller.js";
 import { billingRouter } from "./modules/billing/billing.route.js";
+import { getBillingAccess } from "./modules/billing/billing.controller.js";
 import { providerRouter } from "./modules/provider-proxy/provider.routes.js";
 import { codexTestAccountsRouter } from "./modules/internal/codex-test-accounts.route.js";
 
@@ -72,7 +73,11 @@ app.use("/v1/auth-test", authTestRouter);
 app.use("/v1/candidate", candidateRouter);
 app.use("/v1/jobs", jobRouter);
 app.use("/v1/ranking-runs", rankingRouter);
-app.use("/v1/billing", (_request, response, next) => {
+app.get("/v1/billing/access", getBillingAccess);
+app.use("/v1/billing", (request, response, next) => {
+  if (env.ALPHA_PREMIUM_ACCESS && request.path === "/checkout-session") {
+    return next();
+  }
   if (!env.STRIPE_SECRET_KEY) return response.status(503).json({ error: { code: "BILLING_UNAVAILABLE", message: "Billing is not configured." } });
   next();
 }, billingRouter);

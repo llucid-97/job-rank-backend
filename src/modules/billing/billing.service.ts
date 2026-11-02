@@ -48,6 +48,10 @@ export async function createCheckoutSession(input: {
   email: string | null;
   planCode: string;
 }) {
+  // Alpha includes premium access; reject before billing lookups or Stripe side effects.
+  if (env.ALPHA_PREMIUM_ACCESS) {
+    throw new AppError(409, "ALPHA_ACCESS_INCLUDED", "Premium access is included during the alpha; checkout is disabled.");
+  }
   const plan = await getPlan(input.planCode);
 
   const claimToken = randomUUID();

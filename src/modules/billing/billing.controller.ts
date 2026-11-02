@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
+import { env } from "../../config/env.js";
 import {
   createCheckoutSession,
   createCustomerPortalSession,
@@ -13,6 +14,16 @@ const checkoutSchema = z.object({
 
 export async function getPlans(_request: Request, response: Response) {
   return response.status(200).json({ data: await listBillingPlans() });
+}
+
+/** Let the public client show alpha access without exposing any account data. */
+export async function getBillingAccess(_request: Request, response: Response) {
+  return response.status(200).json({
+    data: {
+      alphaPremiumAccess: env.ALPHA_PREMIUM_ACCESS,
+      effectivePlan: env.ALPHA_PREMIUM_ACCESS ? "premium" : null,
+    },
+  });
 }
 
 export async function startCheckout(request: Request, response: Response) {

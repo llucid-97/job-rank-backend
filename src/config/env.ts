@@ -2,6 +2,12 @@ import "dotenv/config";
 import { z } from "zod";
 
 const environmentSchema = z.object({
+  // This server-owned switch is disabled unless deployment config explicitly enables alpha access.
+  ALPHA_PREMIUM_ACCESS: z.preprocess(
+    value => value === undefined ? false : value,
+    z.union([z.boolean(), z.enum(["true", "false"]).transform(value => value === "true")]),
+  ).default(false),
+
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
