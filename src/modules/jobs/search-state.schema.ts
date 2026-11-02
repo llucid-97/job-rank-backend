@@ -65,7 +65,8 @@ export const searchStateSchema = z.object({
   lastBatch: z.object({
     searches: z.array(savedSearchSchema).min(1).max(40),
     sourceSite: boundedText(100, 200).refine(value => value.trim().length > 0),
-    jobsFetchLimit: z.union([z.literal(10), z.literal(25), z.literal(50), z.literal(100)]),
+    // Reruns use the same small and existing limits accepted by preferences.
+    jobsFetchLimit: z.union([z.literal(1), z.literal(3), z.literal(5), z.literal(10), z.literal(25), z.literal(50), z.literal(100)]),
     sourceSettings: sourceSettings.nullable(),
   }).passthrough().nullable(),
   jobsMaxPostedAgeDays: z.union([z.literal(7), z.literal(14), z.literal(30), z.literal(90)]).nullable(),
