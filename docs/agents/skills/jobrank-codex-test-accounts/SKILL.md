@@ -17,6 +17,8 @@ The script creates a random password for an `@example.invalid` identity, marks i
 
 To register a previously created synthetic account after the lifecycle migration is deployed, run `node scripts/create-codex-test-account.mjs adopt <user-uuid>`. Adoption verifies the reserved email pattern and trusted metadata, then copies the existing expiry to the cleanup queue without extending it.
 
+Supabase Auth applies admin-supplied app metadata after the initial user insert. Keep both lifecycle triggers: the insert trigger and the app-metadata update trigger. The latter registers the cleanup row within the Auth transaction. When changing these hooks, verify the helper's queue postcondition against hosted Auth; a direct database insert test alone does not model the provider sequence. See the [official Auth handler](https://github.com/supabase/auth/blob/master/internal/api/admin.go).
+
 Use the account only for the requested JobRank test. Keep test profile data fictional and avoid paid provider calls unless the parent task specifically needs them. The backend rejects test-account requests at expiry; a daily Vercel Cron removes expired Auth users and their files from both candidate storage buckets. A cleanup failure leaves the account queued for retry while API access remains blocked by the expiry check.
 
 Never make test accounts with real email addresses or real people's data. Do not weaken public signup, use user-editable metadata as an expiry authority, put secrets in the frontend, or change the seven-day limit without explicit instruction. Confirm the test account identity and expiry before using it, and report the account ID (not credentials) when handing off.
