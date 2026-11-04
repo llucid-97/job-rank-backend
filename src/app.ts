@@ -49,6 +49,15 @@ app.post(
   express.raw({ type: "application/json" }),
   handleStripeWebhook,
 );
+// Client diagnostics carry no query parameters or user content.
+app.use(
+  "/v1/client-errors/search-restore",
+  (request, response, next) => {
+    if (request.originalUrl.includes("?")) return response.status(400).end();
+    next();
+  },
+  express.json({ limit: "1kb" }),
+);
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/", (_request, response) => {
