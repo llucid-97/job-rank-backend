@@ -1,3 +1,4 @@
+import { checkJobPolicy } from "../account/employer-blocks.js";
 import { ownerJob } from "../jobs/owner-job.js";
 import { consumeQuota } from "../provider-proxy/provider-quota.js";
 import { supabaseAdmin } from "../../config/supabase.js";
@@ -33,12 +34,13 @@ export async function generateCoverLetter(input: {
 
   const { data: job, error: jobError } = await supabaseAdmin
     .from("jobs")
-    .select("id, title, company_name, description, location")
+    .select("id, title, company_name, description, location, application_url")
     .eq("id", input.jobId)
     .single();
 
   if (jobError) throw jobError;
   const ownedJob = ownerJob(job, userJob.workspace_data);
+  await checkJobPolicy(input.userId, { companyName: ownedJob.company_name ?? null, url: ownedJob.application_url ?? null });
 
   // Load active CV.
   const { data: cv, error: cvError } = await supabaseAdmin
@@ -109,6 +111,7 @@ export async function generateCoverLetter(input: {
   const { schemaText } = await loadCandidateSchema();
   const skillsSchema = JSON.parse(schemaText);
 
+  await checkJobPolicy(input.userId, { companyName: ownedJob.company_name ?? null, url: ownedJob.application_url ?? null });
   await consumeQuota(input.userId, "llm", 1);
 
   const providerResponse = await fetch(

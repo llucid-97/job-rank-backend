@@ -1,3 +1,4 @@
+import { employerDecision, loadEmployerBlocks } from "../account/employer-blocks.js";
 import { ownerJob } from "../jobs/owner-job.js";
 import { consumeQuota } from "../provider-proxy/provider-quota.js";
 import { createHash } from "node:crypto";
@@ -14,6 +15,8 @@ type DatabaseJob = {
   id: string;
   title: string;
   description: string;
+  company_name: string | null;
+  application_url: string | null;
   location: string | null;
   provider_payload: Record<string, unknown> | null;
 };
@@ -214,7 +217,7 @@ async function saveUsage(input: {
 async function rankOneJob(
   context: RankingContext,
   job: DatabaseJob,
-): Promise<boolean> {
+): Promise<"rated" | "failed" | "skipped"> {
   const attemptedAt = new Date().toISOString();
   let resultSaved = false;
 
@@ -232,6 +235,16 @@ async function rankOneJob(
     });
 
     await assertActiveCv(context.userId!, context.cvDocumentId);
+    // Re-read policy just before quota so queued work observes preference edits.
+    const decision = employerDecision(await loadEmployerBlocks(context.userId!), { companyName: job.company_name, url: job.application_url });
+    if (decision.status === "blocked") {
+      const { error } = await supabaseAdmin.from("ranking_run_jobs")
+        .update({ status: "skipped", completed_at: new Date().toISOString(), result_snapshot: {
+          job_id: job.id, status: "skipped", reason: decision.reason, canonical_employer: decision.canonicalName,
+        } }).eq("ranking_run_id", context.runId).eq("job_id", job.id);
+      if (error) throw error;
+      return "skipped";
+    }
     const countLeaves = (value: any): number => value === true ? 1 : Object.values(value).reduce<number>((sum, child) => sum + countLeaves(child), 0);
     const units = context.classifier === "jev" ? countLeaves(scoreProjection(context.skillsProfile)) : 1;
     if (units) await consumeQuota(context.userId!, context.classifier, units);
@@ -311,7 +324,7 @@ async function rankOneJob(
 
     if (context.classifier === "llm") await saveUsage({ context, result });
 
-    return true;
+    return "rated";
   } catch (error) {
     // A complete result remains authoritative even when an auxiliary write loses its response.
     if (resultSaved) {
@@ -319,7 +332,7 @@ async function rankOneJob(
         runId: context.runId,
         jobId: job.id,
       });
-      return true;
+      return "rated";
     }
     const publicMessage =
       error instanceof Error ? error.message : "Ranking failed.";
@@ -337,7 +350,7 @@ async function rankOneJob(
       .eq("ranking_run_id", context.runId).eq("job_id", job.id);
     if (saveFailureError) throw saveFailureError;
 
-    return false;
+    return "failed";
   }
 }
 
@@ -396,7 +409,7 @@ export async function processRankingRun(
 
     const { data: associations, error: jobsError } = await supabaseAdmin
       .from("user_jobs")
-      .select("job_id,workspace_data,jobs(id,title,description,location,provider_payload)")
+      .select("job_id,workspace_data,jobs(id,title,description,company_name,application_url,location,provider_payload)")
       .eq("user_id", userId)
       .in("job_id", jobIds);
 
@@ -412,6 +425,7 @@ export async function processRankingRun(
 
     let completedJobs = 0;
     let failedJobs = 0;
+    let skippedJobs = 0;
     let progressWrite = Promise.resolve();
 
     const configuredConcurrency = Number.parseInt(
@@ -429,18 +443,16 @@ export async function processRankingRun(
       concurrency,
       /** Publish settled per-job counts in order without abandoning other workers. */
       async (job) => {
-        const succeeded = await rankOneJob(context, job);
+        const outcome = await rankOneJob(context, job);
 
-        if (succeeded) {
-          completedJobs++;
-        } else {
-          failedJobs++;
-        }
+        if (outcome === "rated") completedJobs++;
+        else if (outcome === "skipped") skippedJobs++;
+        else failedJobs++;
 
         progressWrite = progressWrite.then(async () => {
           // Progress failures must not detach the workers from their parent run.
           const { error } = await supabaseAdmin.from("ranking_runs")
-            .update({ processed_jobs: completedJobs + failedJobs, succeeded_jobs: completedJobs, failed_jobs: failedJobs })
+            .update({ processed_jobs: completedJobs + failedJobs + skippedJobs, succeeded_jobs: completedJobs, failed_jobs: failedJobs, skipped_jobs: skippedJobs })
             .eq("id", runId).eq("user_id", userId);
           if (error) throw error;
         }).catch(error => {
@@ -454,9 +466,10 @@ export async function processRankingRun(
       .from("ranking_runs")
       .update({
         status: failedJobs === 0 ? "completed" : completedJobs > 0 ? "partially_completed" : "failed",
-        processed_jobs: completedJobs + failedJobs,
-            succeeded_jobs: completedJobs,
+        processed_jobs: completedJobs + failedJobs + skippedJobs,
+        succeeded_jobs: completedJobs,
         failed_jobs: failedJobs,
+        skipped_jobs: skippedJobs,
         completed_at: new Date().toISOString(),
       })
       .eq("id", runId)

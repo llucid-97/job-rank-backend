@@ -7,11 +7,13 @@ import { rankingConfiguration } from '../src/modules/rankings/ranking.configurat
 import { resolveRankingModel } from '../src/modules/provider-proxy/ranking-models.js';
 
 const originalRpc = supabaseAdmin.rpc;
+const originalFrom = supabaseAdmin.from;
 const originalFetch = globalThis.fetch;
-afterEach(() => { supabaseAdmin.rpc = originalRpc; globalThis.fetch = originalFetch; });
+afterEach(() => { supabaseAdmin.from = originalFrom; supabaseAdmin.rpc = originalRpc; globalThis.fetch = originalFetch; });
 function request(model?: string) { return { auth: { userId: 'synthetic-test-user' }, body: { state: { job: 'synthetic' }, questions: { fit: { type: 'choice', instructions: 'Choose one', criteria: { yes: 'yes', no: 'no' } } }, ...(model ? { model } : {}) } } as any; }
 function response() { return { statusCode: 200, headers: {} as Record<string,string>, body: undefined as any, set(key: string, value: string) { this.headers[key.toLowerCase()] = value; return this; }, status(code: number) { this.statusCode = code; return this; }, json(body: any) { this.body = body; return this; }, type() { return this; }, send(body: any) { this.body = body; return this; } } as any; }
-function permit() { supabaseAdmin.rpc = (async () => ({ data: true, error: null })) as any; }
+function emptyPolicy() { supabaseAdmin.from = (() => ({select: () => ({eq: () => ({maybeSingle: async () => ({data: null,error:null})})})})) as any; }
+function permit() { emptyPolicy(); supabaseAdmin.rpc = (async () => ({ data: true, error: null })) as any; }
 
 test('default model is Luna medium, while explicit Jev and legacy configuration remain intact', async () => {
   assert.equal(resolveRankingModel(undefined), 'openai/gpt-6-luna');
@@ -39,6 +41,7 @@ test('explicit Jev routes to Typesafe independently of the new default', async (
 for (const kind of ['rank', 'schema']) for (const [status, header, expected] of [[429,'23','23'],[529,'Wed, 21 Oct 2037 07:28:00 GMT','Wed, 21 Oct 2037 07:28:00 GMT'],[402,'',undefined],[503,'',undefined]] as const) {
   test(`${kind} translates upstream ${status} without retry or leaking provider body`, async () => {
     let attempts = 0, charged = 0;
+    emptyPolicy();
     supabaseAdmin.rpc = (async () => { charged++; return { data:true,error:null }; }) as any;
     globalThis.fetch = (async () => { attempts++; return new Response('secret upstream text', {status,headers:header?{'Retry-After':header}:undefined}); }) as typeof fetch;
     const res = response();
