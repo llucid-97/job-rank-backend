@@ -162,6 +162,7 @@ for (const scenario of [
   {name: 'empty provider page', rows: [], count:0, more:false},
 ]) {
   test(scenario.name, async () => {
+    // Exercise raw-page exhaustion through the real controller with fake transports.
     const events: string[]=[];
     database(events);
     globalThis.fetch=(async () => new Response(JSON.stringify({jobs:scenario.rows}))) as typeof fetch;
