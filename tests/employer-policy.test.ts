@@ -15,6 +15,16 @@ test('exact normalization, aliases, URL exception, and unknown', () => {
   assert.equal(employerDecision(policy,{companyName:'Unknown',url:null}).status,'unknown');
   assert.equal(employerBlocksSchema.safeParse({version:1,companies:[{canonicalName:'---',aliases:[]}],roleExceptions:[]}).success,false);
 });
+test('Unicode names match exactly without dropping letters or marks', () => {
+  const unicodePolicy = employerBlocksSchema.parse({version:1,companies:[{canonicalName:'腾讯',aliases:['腾讯科技']},{canonicalName:'École',aliases:[]}],roleExceptions:[{url:'https://example.invalid/job',companies:['腾讯科技']}]});
+  assert.equal(employerDecision(unicodePolicy,{companyName:'腾讯',url:null}).status,'blocked');
+  assert.equal(employerDecision(unicodePolicy,{companyName:'腾讯科技',url:null}).status,'blocked');
+  assert.equal(employerDecision(unicodePolicy,{companyName:'腾讯科技',url:'https://example.invalid/job'}).status,'allowed');
+  assert.equal(employerDecision(unicodePolicy,{companyName:'腾讯科技',url:'https://example.invalid/other'}).status,'blocked');
+  assert.equal(employerDecision(unicodePolicy,{companyName:'cole',url:null}).status,'allowed');
+  assert.equal(employerDecision(unicodePolicy,{companyName:'école',url:null}).status,'blocked');
+  assert.equal(employerBlocksSchema.safeParse({version:1,companies:[{canonicalName:'\u0301',aliases:[]}],roleExceptions:[]}).success,false);
+});
 test('owner policy blocks job constraints before quota or provider', async () => {
   const originalFrom = supabaseAdmin.from; const originalRpc = supabaseAdmin.rpc; const originalFetch = globalThis.fetch;
   let quota = 0; let calls = 0; let owner = '';

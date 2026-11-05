@@ -2,7 +2,7 @@ import { z } from "zod";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { AppError } from "../../middleware/error-handling.js";
 
-const name = z.string().trim().min(1).max(200).refine(value => normalizeEmployer(value).length > 0);
+const name = z.string().trim().min(1).max(200).refine(value => /[\p{L}\p{N}]/u.test(normalizeEmployer(value)));
 const reason = z.string().trim().min(1).max(1000);
 export const employerBlocksSchema = z.object({
   version: z.literal(1),
@@ -14,7 +14,7 @@ export type EmployerBlocks = z.infer<typeof employerBlocksSchema>;
 export const emptyEmployerBlocks: EmployerBlocks = { version: 1, companies: [], roleExceptions: [] };
 export const jobContextSchema = z.object({ companyName: z.string().max(200).nullable(), url: z.string().max(2048).nullable() }).strict();
 export type JobContext = z.infer<typeof jobContextSchema>;
-export function normalizeEmployer(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+export function normalizeEmployer(value: string): string { return value.toLowerCase().replace(/[^\p{L}\p{N}\p{M}]+/gu, ""); }
 
 /** Keep unknown employers distinct from a confirmed non-match. */
 export function employerDecision(policy: EmployerBlocks, context: JobContext) {
