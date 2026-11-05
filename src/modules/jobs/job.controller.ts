@@ -8,6 +8,7 @@ import { saveSearchResults } from "./job.repository.js";
 import z from "zod";
 import { saveSearch } from "./search.repository.js";
 
+/** Keep normalized results and raw provider pagination together for filtered discovery. */
 export async function searchJobs(request: Request, response: Response) {
   const parsed = jobSearchSchema.safeParse(request.body);
 
@@ -57,6 +58,9 @@ export async function searchJobs(request: Request, response: Response) {
       meta: {
         count: jobs.length,
         page: parsed.data.page,
+        // Normalization can remove duplicates; a short normalized list is not provider exhaustion.
+        providerCount: providerJobs.length,
+        hasMore: providerJobs.length >= parsed.data.limit,
       },
     });
   } finally {

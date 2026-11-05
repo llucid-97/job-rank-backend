@@ -153,3 +153,26 @@ test("successful search releases its lease after saving the job and search histo
     "release_jobsdb_search_lease",
   ]);
 });
+
+// Keep normalized-row count separate from provider exhaustion after duplicates or invalid titles.
+for (const scenario of [
+  {name: 'duplicate full page', rows: [{id:'same',title:'Junior developer'},{id:'same',title:'Junior developer'}], count:1, more:true},
+  {name: 'invalid-title full page', rows: [{id:'bad',title:''},{id:'good',title:'Junior developer'}], count:1, more:true},
+  {name: 'short provider page', rows: [{id:'good',title:'Junior developer'}], count:1, more:false},
+  {name: 'empty provider page', rows: [], count:0, more:false},
+]) {
+  test(scenario.name, async () => {
+    // Exercise raw-page exhaustion through the real controller with fake transports.
+    const events: string[]=[];
+    database(events);
+    globalThis.fetch=(async () => new Response(JSON.stringify({jobs:scenario.rows}))) as typeof fetch;
+    const result=response();
+    await searchJobs(request({query:'synthetic',persistResults:false,limit:2,page:1}),result);
+    assert.equal(result.statusCode,200);
+    assert.equal(result.body.data.length,scenario.count);
+    assert.equal(result.body.meta.count,scenario.count);
+    assert.equal(result.body.meta.providerCount,scenario.rows.length);
+    assert.equal(result.body.meta.hasMore,scenario.more);
+    assert.equal(result.body.meta.page,1);
+  });
+}
