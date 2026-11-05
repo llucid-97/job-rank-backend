@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { checkJobPolicy } from "../account/employer-blocks.js";
 import { env } from "../../config/env.js";
 import { consumeQuota } from "./provider-quota.js";
 import { consumePublicFeedRequest } from "./public-feed-quota.js";
@@ -92,6 +93,7 @@ export async function rankCategorical(request: Request, response: Response) {
   const selected = resolveRankingModel(body.model);
   if (!selected) invalid();
   const option = rankingOptions.find(item => item.id === selected)!;
+  await checkJobPolicy(request.auth!.userId, body.jobContext);
   await consumeQuota(request.auth!.userId, option.kind === "llm" ? "llm" : "jev", option.kind === "llm" ? 1 : questions.length);
   try {
     const deadline = AbortSignal.timeout(60_000);
@@ -128,7 +130,8 @@ export async function rankCategorical(request: Request, response: Response) {
     const first = result.choices[0];
     if (!object(first) || !object(first.message) || typeof first.message.content !== "string") throw new Error("Missing provider answer.");
     response.json({ model: result.model, answers: parseLlmDecision(first.message.content, body.questions) });
-  } catch {
+  } catch (error) {
+    if (error instanceof AppError) throw error;
     throw new AppError(502, "PROVIDER_FAILED", "Ranking provider request failed.");
   }
 }
@@ -168,6 +171,9 @@ export async function generateLlm(request: Request, response: Response) {
     messages = [{ role: "user", content: body.prompt }];
   }
 
+  if (body.workflow === "jobConstraints" || body.jobContext !== undefined) {
+    await checkJobPolicy(request.auth!.userId, body.jobContext);
+  }
   await consumeQuota(request.auth!.userId, "llm", 1);
   // Do not send user-chosen models or an unbounded response budget upstream.
   try {

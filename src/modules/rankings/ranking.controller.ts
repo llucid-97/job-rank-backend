@@ -44,6 +44,7 @@ export async function getRankingRun(request: Request, response: Response) {
       processed_jobs,
       succeeded_jobs,
       failed_jobs,
+      skipped_jobs,
       error_message,
       created_at,
       started_at,

@@ -673,3 +673,17 @@ test('workspace pages owner-rated snapshots by composite key and orders newest r
   }
   assert.equal(db.calls.filter(query => query.table === 'ranking_run_jobs').length, 3);
 });
+
+test('queued work rechecks edited owner policy, skips without quota and preserves history', async () => {
+  const db = rankingDatabase();
+  db.rows.jobs[0].company_name = 'Acme Inc'; db.rows.jobs[0].application_url = 'https://example.invalid/other';
+  const created = await createRankingRun('owner-a', ['job-1']);
+  db.rows.user_preferences = [{user_id:'owner-a',employer_blocks:{version:1,companies:[{canonicalName:'Acme',aliases:['Acme Inc']}],roleExceptions:[]}}];
+  db.rows.job_rankings.push({user_id:'owner-a',job_id:'job-1',analysis:{old:true}});
+  let calls = 0; globalThis.fetch = (async () => {calls++; throw new Error('unexpected provider');}) as any;
+  await processRankingRun(created.run.id,'owner-a',created.jobIds);
+  assert.equal(calls,0); assert.equal(db.rpcCalls.length,0);
+  assert.equal(db.rows.ranking_run_jobs[0].status,'skipped');
+  assert.deepEqual([db.rows.ranking_runs[0].processed_jobs,db.rows.ranking_runs[0].succeeded_jobs,db.rows.ranking_runs[0].failed_jobs,db.rows.ranking_runs[0].skipped_jobs],[1,0,0,1]);
+  assert.deepEqual(db.rows.job_rankings[0].analysis,{old:true});
+});
