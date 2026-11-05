@@ -1,3 +1,4 @@
+import { checkJobPolicy } from "../account/employer-blocks.js";
 import { ownerJob } from "../jobs/owner-job.js";
 import { consumeQuota } from "../provider-proxy/provider-quota.js";
 import { supabaseAdmin } from "../../config/supabase.js";
@@ -50,12 +51,13 @@ export async function generateFollowUpAnswers(input: {
 
   const { data: job, error: jobError } = await supabaseAdmin
     .from("jobs")
-    .select("id, title, company_name, location, description")
+    .select("id, title, company_name, location, description, application_url")
     .eq("id", input.jobId)
     .single();
 
   if (jobError) throw jobError;
   const ownedJob = ownerJob(job, userJob.workspace_data);
+  await checkJobPolicy(input.userId, { companyName: ownedJob.company_name ?? null, url: ownedJob.application_url ?? null });
 
   // Load active CV.
   const { data: cv, error: cvError } = await supabaseAdmin
@@ -160,6 +162,7 @@ export async function generateFollowUpAnswers(input: {
   // Ensure that the CV is still active before calling the provider.
   await assertActiveCv(input.userId, cv.id);
 
+  await checkJobPolicy(input.userId, { companyName: ownedJob.company_name ?? null, url: ownedJob.application_url ?? null });
   await consumeQuota(input.userId, "llm", 1);
 
   const providerResponse = await fetch(

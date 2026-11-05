@@ -12,6 +12,7 @@ test('exact normalization, aliases, URL exception, and unknown', () => {
   assert.equal(employerDecision(policy,{companyName:'acme inc',url:'https://example.invalid/job/two'}).status,'blocked');
   assert.equal(employerDecision(policy,{companyName:'Acme Inc Other',url:null}).status,'allowed');
   assert.equal(employerDecision(policy,{companyName:null,url:null}).status,'unknown');
+  assert.equal(employerDecision(policy,{companyName:'Unknown',url:null}).status,'unknown');
   assert.equal(employerBlocksSchema.safeParse({version:1,companies:[{canonicalName:'---',aliases:[]}],roleExceptions:[]}).success,false);
 });
 test('owner policy blocks job constraints before quota or provider', async () => {

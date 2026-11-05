@@ -18,7 +18,9 @@ export function normalizeEmployer(value: string): string { return value.toLowerC
 
 /** Keep unknown employers distinct from a confirmed non-match. */
 export function employerDecision(policy: EmployerBlocks, context: JobContext) {
-  const company = normalizeEmployer(context.companyName ?? "");
+  const rawCompany = context.companyName?.trim() ?? "";
+  if (!rawCompany || rawCompany.toLowerCase() === "unknown") return { status: "unknown" as const };
+  const company = normalizeEmployer(rawCompany);
   if (!company) return { status: "unknown" as const };
   if (policy.roleExceptions.some(entry => entry.url === context.url && entry.companies.some(name => normalizeEmployer(name) === company))) return { status: "allowed" as const };
   const block = policy.companies.find(entry => [entry.canonicalName, ...entry.aliases].some(name => normalizeEmployer(name) === company));

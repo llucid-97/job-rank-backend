@@ -47,7 +47,7 @@ test("cover letter publication rejects a CV replaced while the provider is runni
       return selected(currentRead === 0 ? { id: "cv-old", extracted_text: "Old CV", is_active: cvIsActive } : null);
     }
     if (table === "candidate_profiles") return selected({ id: "profile-old", skills_profile: { skills: [] } });
-    if (table === "job_rankings") return selected(null);
+    if (table === "job_rankings" || table === "user_preferences") return selected(null);
     throw new Error(`Unexpected table ${table}`);
   }) as any;
 
