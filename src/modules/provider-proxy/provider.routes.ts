@@ -8,6 +8,8 @@ import { AppError } from "../../middleware/error-handling.js";
 import { z } from "zod";
 import { constraintModel, constraintOutputTokens, jevModel, jobConstraintMessages, searchConstraintMessages } from "./constraint-prompts.js";
 import { boundedText } from "../jobs/search-state.schema.js";
+import { matchesResolvedRankingModel, rankingOptions, resolveRankingModel } from "./ranking-models.js";
+import { llmDecisionMessages, parseLlmDecision } from "./llm-decision.js";
 
 export const providerRouter = Router();
 providerRouter.use(["/jev", "/llm", "/feed"], authenticate, requireActiveAccount);
@@ -47,6 +49,16 @@ async function readBounded(response: globalThis.Response, maxBytes: number): Pro
   return Buffer.concat(parts);
 }
 
+/** Log only bounded model IDs and provider-reported token counts; never log prompts or answers. */
+function recordRankingUsage(userId: string, requestedModel: string, result: unknown, questions: number) {
+  if (!object(result)) return;
+  const resolvedModel = typeof result.model === "string" && /^[A-Za-z0-9._:/-]{1,200}$/.test(result.model) ? result.model : null;
+  const usage = object(result.usage) ? result.usage : {};
+  const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 10_000_000 ? value : null;
+  console.info(JSON.stringify({ event: "ranking.provider.usage", userId, requestedModel, resolvedModel, questions,
+    inputTokens: count(usage.prompt_tokens ?? usage.input_tokens), outputTokens: count(usage.completion_tokens ?? usage.output_tokens), totalTokens: count(usage.total_tokens) }));
+}
+
 providerRouter.get("/jev/health", (_request, response) => {
   response.json({ ok: true, service: "jobrank-jev-sidecar" });
 });
@@ -60,15 +72,29 @@ providerRouter.post("/jev/rank", async (request, response) => {
     !(question.type === "score" ? Array.isArray(question.criteria) : object(question.criteria)) || Object.keys(question.criteria as object).length < 2 || Object.keys(question.criteria as object).length > 20 ||
     Object.values(question.criteria as object).some(value => typeof value !== "string" || !value.trim() || value.length > 5_000)
   )) invalid();
-  await consumeQuota(request.auth!.userId, "jev", questions.length);
+  const selected = resolveRankingModel(body.model);
+  if (!selected) invalid();
+  const option = rankingOptions.find(item => item.id === selected)!;
+  await consumeQuota(request.auth!.userId, option.kind === "llm" ? "llm" : "jev", option.kind === "llm" ? 1 : questions.length);
   try {
     const deadline = AbortSignal.timeout(60_000);
+    const direct = selected === "jev-latest";
+    const chat = option.kind === "llm";
+    const url = direct ? "https://api.typesafe.ai/v1/systemone" : chat
+      ? "https://openrouter.ai/api/v1/chat/completions" : "https://openrouter.ai/api/alpha/decisions";
+    const key = direct ? env.TYPESAFE_API_KEY : env.OPENROUTER_API_KEY;
+    const payload = chat
+      ? { model: selected, messages: llmDecisionMessages(body.state, body.questions), max_tokens: 4096,
+          reasoning: { effort: "reasoningEffort" in option ? option.reasoningEffort : "low" },
+          provider: { require_parameters: true } }
+      : { model: selected, state: body.state, questions: body.questions };
+    // Reuse the existing bounded overload retry; no arbitrary model or reasoning setting crosses this boundary.
     let upstream: globalThis.Response | undefined;
     for (let attempt = 0; attempt < 3; attempt++) {
-      upstream = await fetch("https://api.typesafe.ai/v1/systemone", {
+      upstream = await fetch(url, {
         method: "POST", redirect: "error", signal: deadline,
-        headers: { Authorization: `Bearer ${env.TYPESAFE_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "jev-latest", state: body.state, questions: body.questions }),
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
       if (![429, 529].includes(upstream.status) || attempt === 2) break;
       const retryAfter = upstream.headers.get("retry-after");
@@ -83,13 +109,24 @@ providerRouter.post("/jev/rank", async (request, response) => {
     }
     if (!upstream) throw new Error("Provider request failed.");
     if (!upstream.ok) {
-      response.status(upstream.status === 429 || upstream.status === 529 ? 429 : 502).json({ error: "TypeSafe request failed.", upstream_status: upstream.status });
+      response.status(upstream.status === 429 || upstream.status === 529 ? 429 : 502).json({ error: "Ranking provider request failed.", upstream_status: upstream.status });
       return;
     }
     const bytes = await readBounded(upstream, 2 * 1024 * 1024);
-    response.type("application/json").send(bytes);
+    const result: unknown = JSON.parse(bytes.toString("utf8"));
+    recordRankingUsage(request.auth!.userId, selected, result, questions.length);
+    if (!object(result) || !matchesResolvedRankingModel(selected, result.model)) throw new Error("Unexpected provider model.");
+    // Decision responses already have the established model/answers shape; LLM text needs strict extraction.
+    if (!chat) {
+      response.type("application/json").send(bytes);
+      return;
+    }
+    if (!object(result) || typeof result.model !== "string" || !result.model.trim() || !Array.isArray(result.choices)) throw new Error("Missing provider provenance.");
+    const first = result.choices[0];
+    if (!object(first) || !object(first.message) || typeof first.message.content !== "string") throw new Error("Missing provider answer.");
+    response.json({ model: result.model, answers: parseLlmDecision(first.message.content, body.questions) });
   } catch {
-    throw new AppError(502, "PROVIDER_FAILED", "TypeSafe request failed.");
+    throw new AppError(502, "PROVIDER_FAILED", "Ranking provider request failed.");
   }
 });
 
