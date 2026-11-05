@@ -42,3 +42,7 @@ group by entitlement.user_id, entitlement.plan, current_month.month_utc,
 ```
 
 During alpha, stored tier and stored limit remain unchanged; the separate public access contract reports effective premium access and a null effective monthly limit.
+
+Alpha ranking uses the same admitted-operation counters: decision requests charge `jev` units per question, and chat ranking requests charge one `llm` unit. Successful ranking responses also emit the fixed `ranking.provider.usage` event with the account ID, requested model, provider-resolved model, question count, and any bounded token counts the provider actually reports. A missing token count is null, not zero; logs are operational telemetry, not durable billing records or exact spend. These events do not contain candidate, job, prompt, answer or credential text.
+
+The `/v1/jev/rank` name is retained for older clients, but the server allowlist routes Jev to TypeSafe, Elephant and d1-ultra to OpenRouter Decisions, and the three GPT options to OpenRouter chat with server-owned reasoning effort and output cap. Chat probabilities are the model's own estimates, not calibrated decision-model probabilities. The strict parser requires every requested question and category; it does not fill missing results. The `searchState.rankingModel` ID is optional for old saved states. `providerPolicyRevision` must change whenever this adapter's scoring prompt or reasoning settings change, so score histories do not combine incomparable pipelines.

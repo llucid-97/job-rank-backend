@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { rankingModelIds } from "../provider-proxy/ranking-models.js";
 
 const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
 
@@ -59,6 +60,7 @@ function containsCoordinateFields(value: unknown): boolean {
 
 export const searchStateSchema = z.object({
   version: z.literal(1),
+  rankingModel: z.enum(rankingModelIds).optional(),
   currentSearch: searchSnapshotSchema.nullable().optional(),
   locationDefaultAttempted: z.boolean().optional(),
   history: z.array(savedSearchSchema).max(40),
