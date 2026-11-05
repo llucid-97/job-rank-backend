@@ -9,6 +9,7 @@ export const rankingModelIds = [
 ] as const;
 
 export type RankingModelId = (typeof rankingModelIds)[number];
+export const defaultRankingModel: RankingModelId = "openai/gpt-6-luna";
 export const rankingOptions = [
   { id: "jev-latest", label: "Jev", kind: "decision" },
   { id: "baseten/elephant-1", label: "Elephant 9B", kind: "decision" },
@@ -20,7 +21,8 @@ export const rankingOptions = [
 
 /** Old clients can name the historical Jev default without enabling arbitrary models. */
 export function resolveRankingModel(value: unknown): RankingModelId | null {
-  if (value === undefined || value === "jev-latest" || value === "typesafe/jev-1.13-20260917" || value === "jev-1.13.0") return "jev-latest";
+  if (value === undefined) return defaultRankingModel;
+  if (value === "jev-latest" || value === "typesafe/jev-1.13-20260917" || value === "jev-1.13.0") return "jev-latest";
   return typeof value === "string" && (rankingModelIds as readonly string[]).includes(value)
     ? value as RankingModelId : null;
 }

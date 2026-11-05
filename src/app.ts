@@ -28,6 +28,8 @@ app.use(
     origin: env.FRONTEND_URL,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    // Browser retries need the provider delay on cross-origin responses.
+    exposedHeaders: ["Retry-After"],
   }),
 );
 
