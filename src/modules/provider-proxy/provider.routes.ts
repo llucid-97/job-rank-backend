@@ -16,7 +16,7 @@ providerRouter.use(["/jev", "/llm", "/feed"], authenticate, requireActiveAccount
 
 // This per-instance cap is a backstop, not a shared quota across serverless instances.
 const requests = new Map<string, { start: number; count: number }>();
-providerRouter.use(["/jev", "/llm", "/feed"], (request, _response, next) => {
+providerRouter.use(env.ALPHA_PREMIUM_ACCESS ? ["/feed"] : ["/jev", "/llm", "/feed"], (request, _response, next) => {
   const now = Date.now();
   for (const [key, value] of requests) if (now - value.start >= 60_000) requests.delete(key);
   const key = request.auth!.userId;
@@ -49,6 +49,23 @@ async function readBounded(response: globalThis.Response, maxBytes: number): Pro
   return Buffer.concat(parts);
 }
 
+/** Preserve provider throttling without leaking upstream error bodies or credentials. */
+function sendProviderFailure(response: Response, upstream: globalThis.Response) {
+  const status = upstream.status;
+  if (status === 429 || status === 529) {
+    const retryAfter = upstream.headers.get("retry-after");
+    if (retryAfter && retryAfter.length <= 128 && (/^\d{1,10}$/.test(retryAfter) || Number.isFinite(Date.parse(retryAfter)))) {
+      response.set("Retry-After", retryAfter);
+    }
+    response.status(429).json({ error: { code: "PROVIDER_RATE_LIMITED", message: "Ranking provider is busy. Please try again." } });
+  } else if (status === 402) {
+    response.status(402).json({ error: { code: "PROVIDER_CREDIT_EXHAUSTED", message: "The ranking provider has no available credit." } });
+  } else {
+    response.status(502).json({ error: { code: "PROVIDER_FAILED", message: "Ranking provider request failed." } });
+  }
+  void upstream.body?.cancel().catch(() => {});
+}
+
 /** Log only bounded model IDs and provider-reported token counts; never log prompts or answers. */
 function recordRankingUsage(userId: string, requestedModel: string, result: unknown, questions: number) {
   if (!object(result)) return;
@@ -62,7 +79,7 @@ function recordRankingUsage(userId: string, requestedModel: string, result: unkn
 providerRouter.get("/jev/health", (_request, response) => {
   response.json({ ok: true, service: "jobrank-jev-sidecar" });
 });
-providerRouter.post("/jev/rank", async (request, response) => {
+export async function rankCategorical(request: Request, response: Response) {
   const body: unknown = request.body;
   if (!object(body) || !(typeof body.state === "string" || object(body.state) || Array.isArray(body.state)) || !object(body.questions)) invalid();
   const questions = Object.entries(body.questions);
@@ -88,28 +105,14 @@ providerRouter.post("/jev/rank", async (request, response) => {
           reasoning: { effort: "reasoningEffort" in option ? option.reasoningEffort : "low" },
           provider: { require_parameters: true } }
       : { model: selected, state: body.state, questions: body.questions };
-    // Reuse the existing bounded overload retry; no arbitrary model or reasoning setting crosses this boundary.
-    let upstream: globalThis.Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      upstream = await fetch(url, {
-        method: "POST", redirect: "error", signal: deadline,
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (![429, 529].includes(upstream.status) || attempt === 2) break;
-      const retryAfter = upstream.headers.get("retry-after");
-      const seconds = retryAfter && /^\d+$/.test(retryAfter) ? Math.min(Number(retryAfter), 5) : null;
-      await upstream.body?.cancel();
-      await new Promise<void>((resolve, reject) => {
-        if (deadline.aborted) return reject(new Error("Provider deadline exceeded."));
-        const timer = setTimeout(() => { deadline.removeEventListener("abort", aborted); resolve(); }, seconds === null ? 500 * (2 ** attempt) : seconds * 1000);
-        function aborted() { clearTimeout(timer); reject(new Error("Provider deadline exceeded.")); }
-        deadline.addEventListener("abort", aborted, { once: true });
-      });
-    }
-    if (!upstream) throw new Error("Provider request failed.");
+    // The client handles throttling so retries do not multiply across layers.
+    const upstream = await fetch(url, {
+      method: "POST", redirect: "error", signal: deadline,
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
     if (!upstream.ok) {
-      response.status(upstream.status === 429 || upstream.status === 529 ? 429 : 502).json({ error: "Ranking provider request failed.", upstream_status: upstream.status });
+      sendProviderFailure(response, upstream);
       return;
     }
     const bytes = await readBounded(upstream, 2 * 1024 * 1024);
@@ -128,7 +131,8 @@ providerRouter.post("/jev/rank", async (request, response) => {
   } catch {
     throw new AppError(502, "PROVIDER_FAILED", "Ranking provider request failed.");
   }
-});
+}
+providerRouter.post("/jev/rank", rankCategorical);
 
 // Structured inputs keep the server's extraction instructions separate from user data.
 const searchInput = z.object({
@@ -172,7 +176,10 @@ export async function generateLlm(request: Request, response: Response) {
       headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: body.workflow === "candidateProfile" ? env.SKILLS_JSON_GENERATION_MODEL : constraintModel, messages, max_tokens: body.maxTokens ?? constraintOutputTokens, temperature: body.temperature ?? 0, ...(body.responseFormat === "json_object" ? { response_format: { type: "json_object" } } : {}) }),
     });
-    if (!upstream.ok) throw new Error("Provider failed.");
+    if (!upstream.ok) {
+      sendProviderFailure(response, upstream);
+      return;
+    }
     const result = JSON.parse((await readBounded(upstream, 2 * 1024 * 1024)).toString("utf8"));
     const text = result?.choices?.[0]?.message?.content;
     if (typeof text !== "string" || !text.trim()) throw new Error("Empty provider response.");
