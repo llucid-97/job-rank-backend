@@ -64,6 +64,12 @@ export const errorHandler: ErrorRequestHandler = (
       code = "PAYLOAD_TOO_LARGE";
       message = "The request body is too large.";
     }
+  } else if (error instanceof Error && "status" in error && "code" in error
+    && error.status === 400 && ["Z_DATA_ERROR", "Z_BUF_ERROR"].includes(String(error.code))) {
+    // Malformed gzip streams surface directly from zlib instead of body-parser's typed JSON errors.
+    statusCode = 400;
+    code = "INVALID_REQUEST_ENCODING";
+    message = "The compressed request body is invalid.";
   }
 
   // Parser errors may hold CV text in both message and body. Log only the
