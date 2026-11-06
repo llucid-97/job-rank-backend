@@ -5,7 +5,7 @@ import helmet from "helmet";
 
 import { env } from "./config/env.js";
 import { pinoHttp } from "pino-http";
-import { errorHandler } from "./middleware/error-handling.js";
+import { AppError, errorHandler } from "./middleware/error-handling.js";
 import { authTestRouter } from "./routes/auth-test.routes.js";
 import { accountRouter } from "./modules/account/account.routes.js";
 import { candidateRouter } from "./modules/candidate/candidate.route.js";
@@ -27,7 +27,7 @@ app.use(
   cors({
     origin: env.FRONTEND_URL,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Content-Encoding", "Authorization"],
     // Browser retries need the provider delay on cross-origin responses.
     exposedHeaders: ["Retry-After"],
   }),
@@ -45,7 +45,19 @@ app.use(
   }),
 );
 
-app.use("/v1/jobs/workspace", express.json({ limit: "3mb" }));
+const workspaceEncodedLimit = 4 * 1024 * 1024;
+
+// Bound the declared Content-Length before inflation; chunked bodies remain subject to the Vercel request limit.
+app.use("/v1/jobs/workspace", (request, _response, next) => {
+  const length = Number(request.headers["content-length"]);
+  if (request.method === "PUT" && Number.isFinite(length) && length > workspaceEncodedLimit) {
+    next(new AppError(413, "PAYLOAD_TOO_LARGE", "The workspace update is too large."));
+    return;
+  }
+  next();
+});
+// Accept gzip workspace bodies while retaining a finite limit on their decoded JSON size.
+app.use("/v1/jobs/workspace", express.json({ limit: "32mb" }));
 app.post(
   "/v1/billing/webhooks/stripe",
   express.raw({ type: "application/json" }),
