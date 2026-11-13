@@ -61,7 +61,18 @@ export async function saveWorkspace(request: Request, response: Response) {
     p_replace: input.replace,
     p_refresh_provider_content: input.refreshProviderContent,
   });
-  if (error) throw error;
+  // Only a confirmed database abort permits retry; other failures may have committed.
+  if (error) {
+    // Keep private database details out of both the public error and diagnostics.
+    if (error.code === "57014" && error.message === "canceling statement due to statement timeout") {
+      request.log?.error(
+        { event: "workspace.save.rejected", reason: "statement_timeout", db_code: "57014" },
+        "Workspace save rejected",
+      );
+      throw new AppError(503, "WORKSPACE_SAVE_TIMEOUT", "Saving your workspace took too long. Please retry.");
+    }
+    throw error;
+  }
   return response.json({ data });
 }
 
