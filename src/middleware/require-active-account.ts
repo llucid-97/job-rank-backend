@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { supabaseAdmin } from "../config/supabase.js";
 import { AppError } from "./error-handling.js";
 
+// Require a confirmed active entitlement; retry only the known transient clock rejection.
 export async function requireActiveAccount(
   request: Request,
   _response: Response,
@@ -14,11 +15,21 @@ export async function requireActiveAccount(
       throw new AppError(401, "UNAUTHENTICATED", "Authentication is required.");
     }
 
-    const { data, error } = await supabaseAdmin
+    let { data, error } = await supabaseAdmin
       .from("user_entitlements")
       .select("account_status")
       .eq("user_id", userId)
       .maybeSingle();
+
+    // Older PostgREST releases can briefly reject newly issued JWTs due to clock skew.
+    if (error?.code === "PGRST303" && error.message === "JWT issued at future") {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      ({ data, error } = await supabaseAdmin
+        .from("user_entitlements")
+        .select("account_status")
+        .eq("user_id", userId)
+        .maybeSingle());
+    }
 
     if (error) {
       console.error("Entitlement query failed:", {
