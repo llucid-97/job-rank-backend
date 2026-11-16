@@ -4,7 +4,7 @@ import { requireActiveAccount } from "../../middleware/require-active-account.js
 import { searchJobs } from "./job.controller.js";
 import { getMatchHistory, getMatchHistoryConfiguration, putMatchHistory, deleteMatchHistory } from "./match-history.controller.js";
 
-import { getWorkspace, saveWorkspace } from "./workspace.controller.js";
+import { getWorkspace, patchWorkspaceAnalyses, saveWorkspace } from "./workspace.controller.js";
 import { createCoverLetter } from "../cover-letter/cover-letter.controller.js";
 import { createFollowUpAnswers } from "../follow-up-answers/follow-up.controller.js";
 
@@ -19,6 +19,7 @@ jobRouter.delete("/match-history", authenticate, requireActiveAccount, deleteMat
 
 jobRouter.get("/workspace", authenticate, requireActiveAccount, getWorkspace);
 jobRouter.put("/workspace", authenticate, requireActiveAccount, saveWorkspace);
+jobRouter.patch("/workspace/analyses", authenticate, requireActiveAccount, patchWorkspaceAnalyses);
 
 jobRouter.post(
   "/:jobId/cover-letters",

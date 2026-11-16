@@ -57,6 +57,7 @@ app.use("/v1/jobs/workspace", (request, _response, next) => {
   next();
 });
 // Accept gzip workspace bodies while retaining a finite limit on their decoded JSON size.
+app.use("/v1/jobs/workspace/analyses", express.json({ limit: "4mb" }));
 app.use("/v1/jobs/workspace", express.json({ limit: "32mb" }));
 app.post(
   "/v1/billing/webhooks/stripe",

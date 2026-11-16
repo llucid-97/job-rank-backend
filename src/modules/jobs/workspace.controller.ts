@@ -40,6 +40,19 @@ const workspaceSchema = z.object({
   }).passthrough()).max(5000),
 });
 
+const analysisPatchSchema = z.object({
+  sourceSite: z.string().min(1).max(100),
+  jobs: z.array(z.object({
+    id: z.string().min(1).max(500),
+    source: z.string().min(1).max(100),
+    prescriptiveScore: z.number().min(0).max(1).nullable(),
+    summaryJson: z.record(z.string(), z.unknown()).nullable(),
+    llmVerifiedLocation: z.string().max(2000).nullable(),
+    locationMismatch: z.boolean().nullable(),
+    otherData: z.record(z.string(), z.unknown()).nullable(),
+  }).strict()).max(5000),
+}).strict();
+
 /** Replace owner annotations atomically; only an explicit fresh import may refresh shared postings. */
 export async function saveWorkspace(request: Request, response: Response) {
   const input = workspaceSchema.parse(request.body);
@@ -68,6 +81,35 @@ export async function saveWorkspace(request: Request, response: Response) {
       request.log?.error(
         { event: "workspace.save.rejected", reason: "statement_timeout", db_code: "57014" },
         "Workspace save rejected",
+      );
+      throw new AppError(503, "WORKSPACE_SAVE_TIMEOUT", "Saving your workspace took too long. Please retry.");
+    }
+    throw error;
+  }
+  return response.json({ data });
+}
+
+/** Update only analysis snapshots for associations this account already owns. */
+export async function patchWorkspaceAnalyses(request: Request, response: Response) {
+  const input = analysisPatchSchema.parse(request.body);
+  const keys = new Set(input.jobs.map(job => `${job.source}\0${job.id}`));
+  if (keys.size !== input.jobs.length) throw new AppError(400, "DUPLICATE_WORKSPACE_JOB", "Duplicate workspace job IDs.");
+  if (input.sourceSite !== "configured" && input.jobs.some(job => job.source !== input.sourceSite)) {
+    return response.status(400).json({ error: { code: "INVALID_WORKSPACE_SOURCE", message: "Jobs must belong to the selected source." } });
+  }
+  const { data, error } = await supabaseAdmin.rpc("save_job_analyses", {
+    p_user_id: request.auth!.userId,
+    p_source: input.sourceSite,
+    p_jobs: input.jobs,
+  });
+  if (error) {
+    if (error.code === "P0001" && error.message === "WORKSPACE_ANALYSIS_CONFLICT") {
+      throw new AppError(409, "WORKSPACE_ANALYSIS_CONFLICT", "One or more jobs are no longer in your workspace. Reload your workspace and retry.");
+    }
+    if (error.code === "57014" && error.message === "canceling statement due to statement timeout") {
+      request.log?.error(
+        { event: "workspace.analysis_patch.rejected", reason: "statement_timeout", db_code: "57014" },
+        "Workspace analysis patch rejected",
       );
       throw new AppError(503, "WORKSPACE_SAVE_TIMEOUT", "Saving your workspace took too long. Please retry.");
     }
