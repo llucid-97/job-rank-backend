@@ -3,8 +3,26 @@ import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { Ajv } from "ajv";
+import { AppError } from "../../middleware/error-handling.js";
 
 const policyVersion = "1.0.1";
+const invalidSkillsProfileCode = "SKILLS_PROFILE_INVALID_RESPONSE";
+const invalidSkillsProfileMessage =
+  "Your CV is saved, but we couldn't create a usable skills profile. Please try again.";
+const skillsProfileOutputLimitMessage =
+  "Your CV is saved, but we couldn't finish the skills profile. Please try again.";
+
+function invalidSkillsProfileError() {
+  return new AppError(502, invalidSkillsProfileCode, invalidSkillsProfileMessage);
+}
+
+function skillsProfileOutputLimitError() {
+  return new AppError(
+    502,
+    "SKILLS_PROFILE_OUTPUT_LIMIT_REACHED",
+    skillsProfileOutputLimitMessage,
+  );
+}
 
 function hash(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -147,7 +165,7 @@ export async function generateCandidateProfile(
       },
       body: JSON.stringify({
         model,
-        max_tokens: 4096,
+        max_tokens: 8192,
         messages: [
           {
             role: "user",
@@ -162,31 +180,55 @@ export async function generateCandidateProfile(
   );
 
   if (!openRouterResponse.ok) {
-    const errorBody = await openRouterResponse.text();
-
+    // Upstream error bodies can echo candidate input, so retain only safe diagnostics.
     console.error("OpenRouter error:", {
+      code: "SKILLS_PROFILE_PROVIDER_FAILED",
       status: openRouterResponse.status,
-      body: errorBody,
     });
+    void openRouterResponse.body?.cancel().catch(() => {});
 
     throw new Error("Skills generation provider failed.");
   }
 
-  const result = (await openRouterResponse.json()) as {
+  let result: {
     choices?: Array<{
+      finish_reason?: string | null;
       message?: {
         content?: string;
       };
     }>;
   };
-
-  const content = result.choices?.[0]?.message?.content;
-
-  if (!content) {
-    throw new Error("OpenRouter returned an empty response.");
+  try {
+    result = (await openRouterResponse.json()) as typeof result;
+  } catch (error) {
+    if (error instanceof SyntaxError) throw invalidSkillsProfileError();
+    throw error;
   }
 
-  const skillsProfile = JSON.parse(content);
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw invalidSkillsProfileError();
+  }
+
+  const firstChoice = result.choices?.[0];
+  // Providers can exhaust the response budget before returning visible JSON,
+  // so inspect finish_reason before treating an empty body as malformed JSON.
+  if (firstChoice?.finish_reason === "length") {
+    throw skillsProfileOutputLimitError();
+  }
+
+  const content = firstChoice?.message?.content;
+
+  if (typeof content !== "string" || !content.trim()) {
+    throw invalidSkillsProfileError();
+  }
+
+  let skillsProfile: unknown;
+  try {
+    skillsProfile = JSON.parse(content);
+  } catch (error) {
+    if (error instanceof SyntaxError) throw invalidSkillsProfileError();
+    throw error;
+  }
 
   const rootSchema = {
     type: "object",
@@ -199,8 +241,11 @@ export async function generateCandidateProfile(
   const validate = ajv.compile(rootSchema);
 
   if (!validate(skillsProfile)) {
-    console.error("Skills profile validation failed:", validate.errors);
-    throw new Error("Generated skills profile did not match the schema.");
+    console.error("Skills profile validation failed:", {
+      code: invalidSkillsProfileCode,
+      errorCount: validate.errors?.length ?? 0,
+    });
+    throw invalidSkillsProfileError();
   }
 
   await assertActiveCv(userId, document.id);
