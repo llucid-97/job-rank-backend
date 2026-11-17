@@ -208,6 +208,10 @@ export function allowedFeed(raw: string): boolean {
     const value = params.get(key);
     return value !== null && /^\d+$/.test(value) && Number(value) >= min && Number(value) <= max;
   };
+  const safePositivePage = (key: string) => {
+    const value = params.get(key);
+    return value !== null && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) >= 1;
+  };
   const text = (key: string) => (params.get(key)?.length ?? 0) <= 1024;
   switch (url.hostname) {
     case "boards-api.greenhouse.io": return /^\/v1\/boards\/[A-Za-z0-9_-]+\/jobs$/.test(url.pathname) && fields("content") && params.get("content") === "true";
@@ -218,7 +222,7 @@ export function allowedFeed(raw: string): boolean {
     case "remoteok.com": return url.pathname === "/api" && fields();
     case "www.myjobmag.com": case "www.myjobmag.co.ke": case "www.myjobmag.co.za": case "www.myjobmagghana.com": return url.pathname === "/jobsxml_by_categories.xml" && fields();
     case "jobsinnigeria.careers": return url.pathname === "/feed/" && fields();
-    case "himalayas.app": return url.pathname === "/jobs/api/search" && fields("worldwide", "sort", "page", "q") && params.get("worldwide") === "true" && params.get("sort") === "recent" && number("page", 1, 10) && text("q");
+    case "himalayas.app": return url.pathname === "/jobs/api/search" && fields("worldwide", "sort", "page", "q") && params.get("worldwide") === "true" && params.get("sort") === "recent" && safePositivePage("page") && text("q");
     default: return false;
   }
 }
