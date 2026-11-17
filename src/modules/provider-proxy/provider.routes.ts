@@ -212,7 +212,7 @@ export function allowedFeed(raw: string): boolean {
   switch (url.hostname) {
     case "boards-api.greenhouse.io": return /^\/v1\/boards\/[A-Za-z0-9_-]+\/jobs$/.test(url.pathname) && fields("content") && params.get("content") === "true";
     case "api.ashbyhq.com": return /^\/posting-api\/job-board\/[A-Za-z0-9_-]+$/.test(url.pathname) && fields("includeCompensation") && params.get("includeCompensation") === "true";
-    case "api.lever.co": case "api.eu.lever.co": return /^\/v0\/postings\/[A-Za-z0-9_-]+$/.test(url.pathname) && fields("mode", "skip", "limit") && params.get("mode") === "json" && number("skip", 0, 900) && number("limit", 1, 100);
+    case "api.lever.co": case "api.eu.lever.co": return /^\/v0\/postings\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(url.pathname) && fields("mode", "skip", "limit") && params.get("mode") === "json" && number("skip", 0, 900) && number("limit", 1, 100);
     case "jobicy.com": return url.pathname === "/api/v2/remote-jobs" && fields("count", "tag") && number("count", 1, 200) && text("tag");
     case "weworkremotely.com": return url.pathname === "/remote-jobs.rss" && fields();
     case "remoteok.com": return url.pathname === "/api" && fields();
